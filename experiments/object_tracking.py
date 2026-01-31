@@ -7,7 +7,7 @@ from ultralytics import YOLO
 from ultralytics.utils.plotting import Annotator, colors
 
 class ObjectTracker: 
-    def __init__(self, model: str, url: str, conf_threshold: float = 0.10, iou_threshold: float = 0.6, imgsz: int = 1280):
+    def __init__(self, model: str, url: str, conf_threshold: float = 0.01, iou_threshold: float = 0.9, imgsz: int = 1280):
         self.model = YOLO(model) # either modelname or path to model
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
@@ -243,6 +243,5 @@ if __name__ == "__main__":
     tracker = ObjectTracker(
         model="yolo26s.pt",
         url="https://cdn3.wowza.com/1/ZTdLZmtEVnB1aVEz/M3lZck51/hls/live/playlist.m3u8",
-        imgsz=1280,
     )
     tracker.run()
