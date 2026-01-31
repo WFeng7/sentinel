@@ -7,7 +7,23 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.rag import (
+    DecisionEngine,
+    DecisionInput,
+    create_rag_pipeline,
+)
+
 app = FastAPI(title="Sentinel API")
+
+# RAG decision layer (Stage 3) - lazy init with MockPolicyProvider
+_rag_engine: DecisionEngine | None = None
+
+
+def get_decision_engine() -> DecisionEngine:
+    global _rag_engine
+    if _rag_engine is None:
+        _, _, _rag_engine = create_rag_pipeline()
+    return _rag_engine
 
 app.add_middleware(
     CORSMiddleware,
@@ -152,3 +168,25 @@ async def list_cameras(limit: int = 20, refresh: bool = False):
         "cameras": sliced,
         "source": "dot.ri.gov",
     }
+
+
+# ---------------------------------------------------------------------------
+# RAG Decision (Stage 3)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/rag/decide")
+async def rag_decide(body: dict):
+    """
+    RAG decision endpoint.
+    Expects: { "event_type_candidates": [...], "signals": [...], "city": "Providence" }
+    Returns: structured JSON decision, human-readable explanation, supporting policy excerpts.
+    """
+    inp = DecisionInput(
+        event_type_candidates=body.get("event_type_candidates") or [],
+        signals=body.get("signals") or [],
+        city=body.get("city") or "Providence",
+    )
+    engine = get_decision_engine()
+    output = engine.decide(inp)
+    return output.to_dict()
