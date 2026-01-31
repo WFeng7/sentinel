@@ -160,11 +160,11 @@ export default function DashboardPage() {
         await fetchHealth()
         if (!mounted) return
         setHealthError('')
-        setUptimeSamples((prev) => [...prev, true].slice(-30))
+        setUptimeSamples((prev) => [...prev, true].slice(-5))
       } catch (err) {
         if (!mounted) return
         setHealthError(err?.message ?? 'Health check failed')
-        setUptimeSamples((prev) => [...prev, false].slice(-30))
+        setUptimeSamples((prev) => [...prev, false].slice(-5))
       }
     }
 
