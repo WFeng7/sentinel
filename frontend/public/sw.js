@@ -35,12 +35,16 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return
 
+  const requestUrl = new URL(event.request.url)
+  if (requestUrl.origin !== self.location.origin) return
+
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached
 
       return fetch(event.request)
         .then((response) => {
+          if (!response || response.type === 'opaque') return response
           const responseClone = response.clone()
           caches
             .open(CACHE_NAME)
@@ -48,7 +52,7 @@ self.addEventListener('fetch', (event) => {
             .catch(() => {})
           return response
         })
-        .catch(() => cached)
+        .catch(() => cached || new Response('', { status: 504 }))
     })
   )
 })
