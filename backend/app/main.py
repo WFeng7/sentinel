@@ -26,7 +26,7 @@ async def health_check():
 DOT_CAMERAS_PAGE = "https://www.dot.ri.gov/travel/cameras_metro.php"
 DOT_BASE_URL = "https://www.dot.ri.gov"
 CAMERA_CACHE_TTL_SECONDS = 300
-CAMERA_CACHE = {"timestamp": 0.0, "streams": []}
+CAMERA_CACHE = {"timestamp": 0.0, "cameras": []}
 CAMERA_JS_FALLBACKS = [
     "https://www.dot.ri.gov/travel/js/2cameras.js",
     "https://www.dot.ri.gov/travel/js/cameras.js",
@@ -37,7 +37,7 @@ CAMERA_JS_FALLBACKS = [
 
 def extract_js_urls(html_text: str) -> list[str]:
     matches = re.findall(r"<script[^>]+src=['\"]([^'\"]+)['\"]", html_text, flags=re.I)
-    urls = []
+    urls: list[str] = []
     for src in matches:
         if src.startswith("//"):
             urls.append(f"https:{src}")
@@ -50,27 +50,46 @@ def extract_js_urls(html_text: str) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
-def extract_m3u8_like_urls(text: str, base_url: str) -> set[str]:
-    found = set()
-    found |= set(re.findall(r"https?://[^\s'\"<>]+\.m3u8(?:\?[^\s'\"<>]+)?", text, flags=re.I))
-    for u in re.findall(r"//[^\s'\"<>]+\.m3u8(?:\?[^\s'\"<>]+)?", text, flags=re.I):
-        found.add("https:" + u)
-    for u in re.findall(r"/[^\s'\"<>]+\.m3u8(?:\?[^\s'\"<>]+)?", text, flags=re.I):
-        found.add(urljoin(base_url, u))
-    return found
+def clean_camera_alt(alt: str) -> str:
+    alt = (alt or "").strip()
+    prefix = "Camera at "
+    if alt.startswith(prefix):
+        alt = alt[len(prefix) :].strip()
+    return alt
 
 
-def extract_popup_urls(text: str) -> set[str]:
-    cleaned = html.unescape(text)
+def extract_labels_by_cam_id(page_html: str) -> dict[str, str]:
+    cleaned = html.unescape(page_html)
+    labels: dict[str, str] = {}
     pattern = re.compile(
-        r"openVideoPopup2?\s*\(\s*['\"](https?://[^'\"\s]+\.m3u8(?:\?[^'\"\s]+)?)['\"]\s*\)",
-        flags=re.I,
+        r"""<a\b[^>]*\bid\s*=\s*['"](?P<aid>cam\d+)['"][^>]*>.*?<img\b[^>]*\balt\s*=\s*['"](?P<alt>[^'"]*)['"][^>]*>.*?</a>""",
+        flags=re.I | re.S,
     )
-    matches = set(pattern.findall(cleaned))
-    script_blocks = re.findall(r"<script[^>]*>(.*?)</script>", cleaned, flags=re.I | re.S)
-    for script in script_blocks:
-        matches.update(pattern.findall(script))
-    return matches
+    for m in pattern.finditer(cleaned):
+        cam_id = m.group("aid").strip()
+        alt = clean_camera_alt(m.group("alt"))
+        if alt:
+            labels[cam_id] = alt
+    return labels
+
+
+def extract_id_to_m3u8_from_text(text: str) -> dict[str, str]:
+    cleaned = html.unescape(text)
+    id_to_url: dict[str, str] = {}
+    pattern = re.compile(
+        r"""document\.getElementById\(\s*['"](?P<id>cam\d+)['"]\s*\)\s*\.addEventListener\(\s*['"]click['"]\s*,\s*function\s*\(\s*\)\s*\{\s*openVideoPopup2?\s*\(\s*['"](?P<url>https?://[^'"\s]+\.m3u8(?:\?[^'"\s]+)?)['"]\s*\)\s*;?\s*\}\s*\)\s*;?""",
+        flags=re.I | re.S,
+    )
+    for m in pattern.finditer(cleaned):
+        cam_id = m.group("id").strip()
+        url = m.group("url").strip()
+        id_to_url[cam_id] = url
+    return id_to_url
+
+
+def extract_inline_scripts(page_html: str) -> list[str]:
+    cleaned = html.unescape(page_html)
+    return re.findall(r"<script[^>]*>(.*?)</script>", cleaned, flags=re.I | re.S)
 
 
 async def fetch_text(client: httpx.AsyncClient, url: str) -> str:
@@ -79,17 +98,16 @@ async def fetch_text(client: httpx.AsyncClient, url: str) -> str:
     return response.text
 
 
-async def fetch_camera_streams(force_refresh: bool = False) -> list[str]:
+async def fetch_cameras(force_refresh: bool = False) -> list[dict]:
     now = time.time()
     if (
         not force_refresh
-        and CAMERA_CACHE["streams"]
+        and CAMERA_CACHE["cameras"]
         and now - CAMERA_CACHE["timestamp"] < CAMERA_CACHE_TTL_SECONDS
     ):
-        return CAMERA_CACHE["streams"]
+        return CAMERA_CACHE["cameras"]
 
     headers = {"User-Agent": "Sentinel/1.0 (+https://localhost)"}
-    streams = set()
 
     async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
         try:
@@ -97,8 +115,11 @@ async def fetch_camera_streams(force_refresh: bool = False) -> list[str]:
         except httpx.HTTPError as exc:
             raise HTTPException(status_code=502, detail="Failed to reach RIDOT cameras page.") from exc
 
-        streams |= extract_m3u8_like_urls(page_html, DOT_BASE_URL)
-        streams |= extract_popup_urls(page_html)
+        labels = extract_labels_by_cam_id(page_html)
+        id_to_url: dict[str, str] = {}
+
+        for script in extract_inline_scripts(page_html):
+            id_to_url.update(extract_id_to_m3u8_from_text(script))
 
         js_urls = extract_js_urls(page_html) or CAMERA_JS_FALLBACKS
         for js_url in js_urls:
@@ -106,13 +127,17 @@ async def fetch_camera_streams(force_refresh: bool = False) -> list[str]:
                 js_text = await fetch_text(client, js_url)
             except httpx.HTTPError:
                 continue
-            streams |= extract_m3u8_like_urls(js_text, DOT_BASE_URL)
-            streams |= extract_popup_urls(js_text)
+            id_to_url.update(extract_id_to_m3u8_from_text(js_text))
 
-    stream_list = sorted(streams)
+    cameras = []
+    for cam_id, stream in id_to_url.items():
+        label = labels.get(cam_id, "")
+        cameras.append({"id": cam_id, "label": label, "stream": stream})
+
+    cameras.sort(key=lambda x: (x["label"] == "", x["label"].lower(), x["id"]))
     CAMERA_CACHE["timestamp"] = now
-    CAMERA_CACHE["streams"] = stream_list
-    return stream_list
+    CAMERA_CACHE["cameras"] = cameras
+    return cameras
 
 
 @app.get("/cameras")
@@ -120,9 +145,10 @@ async def list_cameras(limit: int = 20, refresh: bool = False):
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit must be at least 1")
 
-    streams = await fetch_camera_streams(force_refresh=refresh)
+    cameras = await fetch_cameras(force_refresh=refresh)
+    sliced = cameras[:limit]
     return {
-        "count": min(limit, len(streams)),
-        "streams": streams[:limit],
+        "count": len(sliced),
+        "cameras": sliced,
         "source": "dot.ri.gov",
     }
