@@ -4,6 +4,7 @@
 
 :root {
   font-family: "Source Code Pro", system-ui, -apple-system, sans-serif;
+  letter-spacing: -0.02em;
   --bg-primary: #001c1c;
   --text-primary: #f1f3f3;
   --button-primary: #efbf04;
@@ -11,4 +12,10 @@
   --metadata-2: #6699d8;
   --metadata-3: #667f33;
   --metadata-4: #ff0c0c;
+}
+
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
 }

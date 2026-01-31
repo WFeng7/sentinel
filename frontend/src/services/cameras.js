@@ -28,6 +28,14 @@ export async function fetchTrackingStatus() {
   return response.json()
 }
 
+export async function fetchHealth() {
+  const response = await fetch(`${API_BASE}/health`)
+  if (!response.ok) {
+    throw new Error('Health check failed')
+  }
+  return response.json()
+}
+
 function normalizeCameraEntry(entry, index) {
   if (typeof entry === 'string') {
     return { url: entry, label: `Camera ${index + 1}` }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchCameraStreams } from '../services/cameras.js'
+import { fetchCameraStreams, fetchHealth } from '../services/cameras.js'
 
 export default function DashboardPage() {
   const navigate = useNavigate()
@@ -15,7 +15,38 @@ export default function DashboardPage() {
   const [controlPanelOpen, setControlPanelOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [showLabels, setShowLabels] = useState(true)
+  const [activeIncident, setActiveIncident] = useState(null)
+  const [uptime, setUptime] = useState(100)
+  const [uptimeSamples, setUptimeSamples] = useState([true])
+  const [healthError, setHealthError] = useState('')
   const orderKey = 'sentinel.cameraOrder.v1'
+
+  const incidents = [
+    {
+      id: 'incident-1',
+      title: 'Motion spike detected',
+      status: 'Critical',
+      statusColor: 'bg-metadata-4',
+      relative: '2m ago',
+      timestamp: '2026-01-31 14:22'
+    },
+    {
+      id: 'incident-2',
+      title: 'Access door left open',
+      status: 'Alert',
+      statusColor: 'bg-metadata-2',
+      relative: '11m ago',
+      timestamp: '2026-01-31 14:13'
+    },
+    {
+      id: 'incident-3',
+      title: 'Shift change logged',
+      status: 'Info',
+      statusColor: 'bg-metadata-3',
+      relative: '28m ago',
+      timestamp: '2026-01-31 13:56'
+    }
+  ]
 
   const expandedStream = expandedKey ? streams.find((s) => s.key === expandedKey) : null
   const expandedLabel = expandedStream?.label || 'Camera'
@@ -77,6 +108,11 @@ export default function DashboardPage() {
   const loadStreams = (forceRefresh) => {
     const latestOrder = readOrder()
     setError('')
+    if (forceRefresh) {
+      try {
+        localStorage.removeItem(cacheKey)
+      } catch {}
+    }
     fetchCameraStreams(50, forceRefresh)
       .then((data) => {
         const payload = data?.cameras ?? data?.streams ?? data
@@ -115,6 +151,37 @@ export default function DashboardPage() {
       clearInterval(interval)
     }
   }, [])
+
+  useEffect(() => {
+    let mounted = true
+
+    const poll = async () => {
+      try {
+        await fetchHealth()
+        if (!mounted) return
+        setHealthError('')
+        setUptimeSamples((prev) => [...prev, true].slice(-30))
+      } catch (err) {
+        if (!mounted) return
+        setHealthError(err?.message ?? 'Health check failed')
+        setUptimeSamples((prev) => [...prev, false].slice(-30))
+      }
+    }
+
+    poll()
+    const sampleInterval = setInterval(poll, 10000)
+
+    return () => {
+      mounted = false
+      clearInterval(sampleInterval)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!uptimeSamples.length) return
+    const successes = uptimeSamples.filter(Boolean).length
+    setUptime(Math.round((successes / uptimeSamples.length) * 1000) / 10)
+  }, [uptimeSamples])
 
   useEffect(() => {
     if (!expandedKey) return
@@ -215,7 +282,7 @@ export default function DashboardPage() {
 
       <div className="absolute bottom-4 left-4 z-50 flex items-center gap-2">
         <button
-          className="flex h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-slate-900/80 text-xl text-slate-100 shadow-lg transition hover:bg-slate-800"
+          className="flex h-12 w-12 items-center justify-center border border-white/10 bg-slate-900/80 text-xl text-slate-100 shadow-lg transition hover:bg-slate-800"
           onClick={() => setControlPanelOpen((prev) => !prev)}
           type="button"
           aria-label="Toggle control panel"
@@ -224,7 +291,7 @@ export default function DashboardPage() {
         </button>
         {controlPanelOpen && (
           <button
-            className="flex h-12 w-12 items-center justify-center rounded-full border border-white/10 bg-slate-900/80 text-xl text-slate-100 shadow-lg transition hover:bg-slate-800"
+            className="flex h-12 w-12 items-center justify-center border border-white/10 bg-slate-900/80 text-xl text-slate-100 shadow-lg transition hover:bg-slate-800"
             onClick={() => navigate('/')}
             type="button"
             aria-label="Return home"
@@ -240,14 +307,39 @@ export default function DashboardPage() {
             controlPanelOpen ? 'w-1/3 opacity-100' : 'w-0 opacity-0 pointer-events-none'
           }`}
         >
-          <div className="flex h-full flex-col gap-5 p-6">
-            <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Control Panel</div>
+          {activeIncident && controlPanelOpen && (
+            <div className="absolute inset-0 z-30 flex items-start justify-center bg-slate-950/80 p-6">
+              <div className="relative w-full rounded-2xl border border-white/10 bg-slate-900/90 p-5 text-slate-100 shadow-2xl">
+                <div className="pointer-events-none inline-flex items-center gap-2 rounded-sm border border-white/10 bg-slate-900/70 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100">
+                  <span className={`h-2 w-2 rounded-full ${activeIncident.statusColor}`} />
+                  {activeIncident.status}
+                </div>
+                <button
+                  className="absolute right-4 top-4 flex items-center justify-center rounded-sm border border-white/10 bg-slate-900/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-100 backdrop-blur transition hover:bg-slate-800"
+                  onClick={() => setActiveIncident(null)}
+                  type="button"
+                  aria-label="Close incident"
+                >
+                  X
+                </button>
+                <h3 className="mt-4 text-lg font-semibold text-white">{activeIncident.title}</h3>
+                <p className="mt-2 text-sm text-slate-300">
+                  Observed at {activeIncident.timestamp}. ({activeIncident.relative})
+                </p>
+                <div className="mt-4 rounded-lg border border-white/10 bg-slate-950/70 p-3 text-xs text-slate-300">
+                  Review the related camera footage and acknowledge the incident once verified.
+                </div>
+              </div>
+            </div>
+          )}
+            <div className="flex h-full flex-col gap-5 p-6">
+              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Control Panel</div>
 
             <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
               <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400">
                 <span>Filters</span>
                 <button
-                  className="rounded-full border border-white/10 bg-slate-900/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-100 transition hover:bg-slate-800"
+                  className="border border-white/10 bg-slate-900/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-100 transition hover:bg-slate-800"
                   onClick={() => loadStreams(true)}
                   type="button"
                 >
@@ -285,45 +377,67 @@ export default function DashboardPage() {
             </div>
 
             <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Recent Incidents</span>
-                <div className="flex items-center gap-2 text-[11px] text-slate-400">
-                  <span className="flex items-center gap-1">
-                    <span className="h-2 w-2 rounded-full bg-metadata-1" />
-                    Critical
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="h-2 w-2 rounded-full bg-metadata-2" />
-                    Alert
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <span className="h-2 w-2 rounded-full bg-metadata-3" />
-                    Info
-                  </span>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <span className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Recent Incidents</span>
+                  <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 bg-metadata-4" />
+                      Critical
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 bg-metadata-2" />
+                      Alert
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="h-2 w-2 bg-metadata-3" />
+                      Info
+                    </span>
+                  </div>
+                </div>
+                <div className="flex max-w-[220px] flex-col items-end gap-1 border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-slate-100">
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Session uptime</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-emerald-200">{uptime.toFixed(1)}%</span>
+                    <div className="flex items-center gap-1">
+                      {uptimeSamples.map((ok, index) => (
+                        <span
+                          key={`${index}-${ok ? 'up' : 'down'}`}
+                          className={`h-2 w-2 ${ok ? 'bg-emerald-400' : 'bg-rose-400'}`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                  {healthError && (
+                    <span className="text-[10px] uppercase tracking-[0.16em] text-rose-300">{healthError}</span>
+                  )}
                 </div>
               </div>
               <div className="space-y-2 text-xs text-slate-300">
-                <div className="flex items-center justify-between rounded-md border border-white/10 bg-slate-950/60 px-3 py-2">
-                  <span>Motion spike detected</span>
-                  <span className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-metadata-1" />
-                    2m ago
-                  </span>
-                </div>
-                <div className="flex items-center justify-between rounded-md border border-white/10 bg-slate-950/60 px-3 py-2">
-                  <span>Access door left open</span>
-                  <span className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-metadata-2" />
-                    11m ago
-                  </span>
-                </div>
-                <div className="flex items-center justify-between rounded-md border border-white/10 bg-slate-950/60 px-3 py-2">
-                  <span>Shift change logged</span>
-                  <span className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-metadata-3" />
-                    28m ago
-                  </span>
-                </div>
+                {incidents.map((incident) => (
+                  <button
+                    key={incident.id}
+                    className="flex w-full items-start justify-between gap-3 rounded-md border border-white/10 bg-slate-950/60 px-3 py-2 text-left transition hover:border-white/20 hover:bg-slate-900/70"
+                    onClick={() => setActiveIncident(incident)}
+                    type="button"
+                  >
+                    <div className="space-y-1">
+                      <span className="block text-sm font-semibold text-slate-100">{incident.title}</span>
+                      <span className="block text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                        {incident.timestamp}
+                      </span>
+                    </div>
+                    <div className="flex flex-col items-end gap-1 text-[11px] text-slate-400">
+                      <span className="flex items-center gap-2">
+                        <span className={`h-2 w-2 rounded-full ${incident.statusColor}`} />
+                        {incident.status}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                        {incident.relative}
+                      </span>
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
           </div>
