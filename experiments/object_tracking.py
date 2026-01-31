@@ -242,7 +242,7 @@ class ObjectTracker:
 if __name__ == "__main__":
     # Use yolo11m.pt or yolo11l.pt for more detections on distant/small cars (slower).
     tracker = ObjectTracker(
-        model="yolo26s.pt",
-        url="https://cdn3.wowza.com/1/ZTdLZmtEVnB1aVEz/M3lZck51/hls/live/playlist.m3u8",
+        model="yolo26m.pt",
+        url="https://cdn3.wowza.com/1/SkRQeFhmUk9sTDJG/dkovKzdK/hls/live/playlist.m3u8",
     )
     tracker.run()
