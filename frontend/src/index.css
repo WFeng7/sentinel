@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
+  font-family: "Source Code Pro", system-ui, -apple-system, sans-serif;
   --bg-primary: #001c1c;
   --text-primary: #f1f3f3;
   --button-primary: #efbf04;
