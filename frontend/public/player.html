@@ -161,26 +161,6 @@
         setFallback('HLS not supported in this browser.')
       }
 
-      document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-          try {
-            video.pause()
-          } catch {}
-          if (hls) {
-            try {
-              hls.stopLoad()
-            } catch {}
-          }
-        } else {
-          if (hls) {
-            try {
-              hls.startLoad()
-            } catch {}
-          }
-          video.play().catch(() => {})
-        }
-      })
-
       window.addEventListener('message', (event) => {
         const data = event?.data
         if (!data || typeof data !== 'object') return

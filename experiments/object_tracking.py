@@ -750,6 +750,7 @@ class ObjectTracker:
                 classes=[0, 2, 3, 5, 7],
                 max_det=500,
                 tracker="botsort.yaml",
+                device="mps",,
                 device="mps",
             )
             self.ann = Annotator(frame, line_width=2, font_size=1)
@@ -947,10 +948,10 @@ if __name__ == "__main__":
     else:
         # Live stream mode (default)
         tracker = ObjectTracker(
-            model="yolo26s.pt",
+            model="yolo26m.pt",
             video_source="https://cdn3.wowza.com/1/T05XOENNUVZBQ0cr/STJqWUVl/hls/live/playlist.m3u8",
             # Alternative stream:
-            # video_source="https://cdn3.wowza.com/1/ZTdLZmtEVnB1aVEz/M3lZck51/hls/live/playlist.m3u8",
+            # video_source="https://cdn3.wowza.com/1/SkRQeFhmUk9sTDJG/dkovKzdK/hls/live/playlist.m3u8",
         )
     
     tracker.run()
