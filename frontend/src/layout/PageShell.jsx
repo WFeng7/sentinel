@@ -2,14 +2,14 @@ import { Link } from 'react-router-dom'
 
 export const pageMeta = {
   '/': {
-    title: 'Sentinel | Home',
+    title: 'Sentinel',
     eyebrow: 'Sentinel',
     heading: 'Sentinel | Home',
     description:
       'Frontend runs on Vite. Backend runs on FastAPI. Use the root dev script to launch both.'
   },
   '/dashboard': {
-    title: 'Sentinel | Dashboard',
+    title: 'Sentinel',
     eyebrow: 'Sentinel',
     heading: 'Sentinel | Dashboard',
     description: 'Monitor system activity, review alerts, and track project health in one place.'
@@ -18,7 +18,6 @@ export const pageMeta = {
 
 const navLinks = [
   { label: 'Home', to: '/' },
-  { label: 'About', to: '/about' },
   { label: 'Docs', to: '/docs' }
 ]
 
@@ -38,7 +37,7 @@ function Header({ condensed, showBrand }) {
           <div className="flex min-w-[140px] items-center">
             {showBrand ? (
               <Link className="flex items-center gap-3" to="/">
-                <span className="text-[11px] font-medium tracking-[0.08em] text-white/90">Sentinel</span>
+                <span className="text-sm font-medium tracking-[0.08em] text-white/90">Sentinel</span>
               </Link>
             ) : (
               <span />

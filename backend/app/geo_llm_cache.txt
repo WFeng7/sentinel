@@ -1,0 +1,39 @@
+{"label": "95-27 I-95 S @ Garden", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769910858.983932}
+{"label": "DMS and Camera Rt 146 SB", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769910869.070979}
+{"label": "Flyover", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769910880.583186}
+{"label": "I-195 E @ India St.", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769910898.793109}
+{"label": "I-195 E @ Rt 114", "geo": {"lat": 41.8084, "lng": -71.4482}, "miss": false, "ts": 1769910915.274452}
+{"label": "I-195 W @ Gano St", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769910928.565541}
+{"label": "I-195 W @ Mass State Line", "geo": {"lat": 41.7687, "lng": -71.4482}, "miss": false, "ts": 1769910940.952436}
+{"label": "I-195 W @ Washington Bridge", "geo": {"lat": 41.8234, "lng": -71.4189}, "miss": false, "ts": 1769910953.886027}
+{"label": "I-195 WB Split @ I-95", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769910966.351576}
+{"label": "I-95 @ Broadway (Prov)", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769910980.8925052}
+{"label": "I-95 N @ Branch Ave", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769910994.0013802}
+{"label": "I-95 N @ Kinsley Ave", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911006.1611269}
+{"label": "I-95 N @ Public St", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911020.794283}
+{"label": "I-95 N @ Smithfield Ave", "geo": {"lat": 41.8781, "lng": -71.4482}, "miss": false, "ts": 1769911031.5823941}
+{"label": "I-95 N @ Thurbers Ave", "geo": {"lat": 41.8231, "lng": -71.4154}, "miss": false, "ts": 1769911042.0575008}
+{"label": "I-95 N @ Vernon St", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911055.682893}
+{"label": "I-95 S @ 6/10 Interchange", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769911067.3163059}
+{"label": "I-95 S @ Broad St", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911080.287715}
+{"label": "I-95 S @ Central Ave", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911090.4409332}
+{"label": "I-95 S @ Detroit Ave", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769911103.568015}
+{"label": "I-95 S @ East St", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911116.572223}
+{"label": "I-95 S @ Elmwood Ave", "geo": {"lat": 41.8231, "lng": -71.4174}, "miss": false, "ts": 1769911128.6557288}
+{"label": "I-95 S @ Orms St", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769911139.406803}
+{"label": "Memorial @ Francis St", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911156.609448}
+{"label": "Memorial @ Steeple", "geo": {"lat": 41.8231, "lng": -71.4128}, "miss": false, "ts": 1769911173.332041}
+{"label": "Promenade St @ Dean St", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911192.6557992}
+{"label": "Rt 10 N @ Elmwood", "geo": {"lat": 41.8231, "lng": -71.4348}, "miss": false, "ts": 1769911210.535888}
+{"label": "Rt 10 N @ Kenwood Ave", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769911229.645247}
+{"label": "Rt 10 S @ Reservoir", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911246.5529401}
+{"label": "Rt 10 S @ Union Ave", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911264.8505092}
+{"label": "Rt 146 NB @ Rt 116", "geo": {"lat": 41.8231, "lng": -71.4482}, "miss": false, "ts": 1769911283.58882}
+{"label": "Rt 146 North at Admiral Street", "geo": {"lat": 41.8231, "lng": -71.4482}, "miss": false, "ts": 1769911299.766888}
+{"label": "Rt 146 North at Charles Street", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911318.8089228}
+{"label": "Rt 146 North at Sherman Ave", "geo": {"lat": 41.8231, "lng": -71.4484}, "miss": false, "ts": 1769911336.571462}
+{"label": "Rt 146 North State Police", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911354.71152}
+{"label": "Rt 146 S @ Branch Ave", "geo": {"lat": 41.8231, "lng": -71.4482}, "miss": false, "ts": 1769911372.528585}
+{"label": "Rt 6 W @ Atwood", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911390.5988019}
+{"label": "Rt 6 W @ Glenbridge", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911408.407943}
+{"label": "Rt 6 W DMS and Camera", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769911428.579489}
