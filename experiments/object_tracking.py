@@ -133,9 +133,14 @@ class ObjectTracker:
         # Minimum padding (pixels) for hit area so small boxes are easier to click
         self.click_padding = 8
 
-        # Preprocessing for snow/glare (Providence cameras): CLAHE + mild highlight compression
+        # Preprocessing for snow/glare and low-light: CLAHE + mild gamma; optional low-light denoise
         self._clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        self._preprocess_gamma = 1.00  # mild gamma on luminance to compress snow glare; >1 darkens brights
+        self._preprocess_gamma = 1.00  # >1 darkens brights, <1 brightens shadows
+        self._night_luma_threshold = 60.0  # below this mean luma, apply low-light boosts
+        self._night_gamma = 0.75  # brighten shadows at night
+        self._night_denoise_h = 4  # mild denoise strength
+        self._night_unsharp_amount = 0.5  # subtle edge boost
+        self._night_unsharp_sigma = 1.0
 
         # Velocity: track history (id -> list of (frame_idx, cx, cy)); max length per track
         self._track_history: dict[int, list[tuple[int, float, float]]] = {}
@@ -170,7 +175,13 @@ class ObjectTracker:
         # Direction-change indicator: parameters
         self._direction_flip_window_frames = 10
         self._direction_flip_cos_threshold = -0.5  # cos(120°)
-        
+        # Low-object anomaly detection (self-normalized)
+        self._bbox_history: dict[int, list[tuple[int, float, float]]] = {}
+        self._bbox_history_max_len = 15
+        self._low_object_max_tracked = 2
+        self._low_object_z_threshold = 3.5
+        self._low_object_min_tests = 3
+
         # Both speeds and accelerations are now in-memory only (no file persistence)
         # Database file parameter kept for backward compatibility but not used
 
@@ -414,12 +425,22 @@ class ObjectTracker:
         lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         l = self._clahe.apply(l)
-        # Mild gamma on luminance to compress highlights (snow) without overdoing it
+        # Mild gamma on luminance (default ~1.0). If low light, brighten shadows a bit.
+        mean_luma = float(np.mean(l))
+        gamma = self._night_gamma if mean_luma < self._night_luma_threshold else self._preprocess_gamma
         l_float = np.clip(l.astype(np.float32) / 255.0, 0, 1)
-        l_gamma = np.power(l_float, self._preprocess_gamma)
+        l_gamma = np.power(l_float, gamma)
         l = (l_gamma * 255.0).astype(np.uint8)
+        # Subtle unsharp mask on luminance in low light to recover edges
+        if mean_luma < self._night_luma_threshold and self._night_unsharp_amount > 0:
+            blurred = cv2.GaussianBlur(l, (0, 0), self._night_unsharp_sigma)
+            l = cv2.addWeighted(l, 1.0 + self._night_unsharp_amount, blurred, -self._night_unsharp_amount, 0)
         lab = cv2.merge([l, a, b])
-        return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+        # Optional mild denoise in low light to reduce sensor noise without blurring edges too much.
+        if mean_luma < self._night_luma_threshold and self._night_denoise_h > 0:
+            out = cv2.fastNlMeansDenoisingColored(out, None, self._night_denoise_h, self._night_denoise_h, 7, 21)
+        return out
 
     def _window_to_image_coords(self, x, y):
         """Convert window click (x,y) to image coordinates (handles scaled/resized window)."""
@@ -843,8 +864,112 @@ class ObjectTracker:
             'tracks_too_short': tracks_too_short,
             'tracks_too_old': tracks_too_old
         }
+
+    def _update_bbox_history(self, track_id: int, box: np.ndarray, frame_idx: int):
+        """Store bbox area/aspect ratio history for self-normalized anomaly checks."""
+        tid = int(track_id)
+        x1, y1, x2, y2 = box
+        w = max(1.0, float(x2 - x1))
+        h = max(1.0, float(y2 - y1))
+        area = w * h
+        aspect = w / h
+        if tid not in self._bbox_history:
+            self._bbox_history[tid] = []
+        hist = self._bbox_history[tid]
+        hist.append((frame_idx, area, aspect))
+        if len(hist) > self._bbox_history_max_len:
+            hist.pop(0)
+
+    @staticmethod
+    def _robust_z_score(latest: float, history: np.ndarray) -> float:
+        """Compute robust z-score using median and MAD; returns 0 if not enough variance."""
+        if history.size == 0:
+            return 0.0
+        median = float(np.median(history))
+        mad = float(np.median(np.abs(history - median)))
+        if mad < 1e-6:
+            return 0.0
+        return 0.6745 * (latest - median) / mad
+
+    def _indicator_low_object_anomaly(self, frame_idx: int, n_tracked: int) -> tuple[bool, dict]:
+        """Indicator: Self-normalized anomalies when few objects are tracked.
+        Uses per-track robust z-scores for speed/accel/jerk and bbox area/aspect changes.
+        """
+        if n_tracked > self._low_object_max_tracked:
+            return False, {'enabled': False, 'reason': 'too_many_objects'}
+
+        z_thresh = self._low_object_z_threshold
+        min_tests = self._low_object_min_tests
+        objects_flagged = 0
+        tests_triggered = 0
+        tracks_checked = 0
+        tracks_insufficient = 0
+
+        for tid in list(self._track_history.keys()):
+            # Speed history
+            if tid not in self._speed_history or len(self._speed_history[tid]) < 5:
+                tracks_insufficient += 1
+                continue
+            tracks_checked += 1
+
+            # Speed/accel/jerk self-normalized z-scores
+            _, latest_speed = self._speed_history[tid][-1]
+            speed_hist_vals = np.array([v for _, v in self._speed_history[tid][:-1]], dtype=np.float32)
+            speed_z = abs(self._robust_z_score(latest_speed, speed_hist_vals))
+
+            if tid in self._acceleration_history and len(self._acceleration_history[tid]) >= 5:
+                _, latest_accel = self._acceleration_history[tid][-1]
+                accel_hist_vals = np.array([a for _, a in self._acceleration_history[tid][:-1]], dtype=np.float32)
+                accel_z = abs(self._robust_z_score(latest_accel, accel_hist_vals))
+            else:
+                accel_z = 0.0
+
+            # Derive jerk history from accel history if present
+            if tid in self._acceleration_history and len(self._acceleration_history[tid]) >= 6:
+                accel_vals = [a for _, a in self._acceleration_history[tid]]
+                jerk_vals = np.diff(accel_vals)
+                latest_jerk = float(jerk_vals[-1])
+                jerk_hist_vals = np.array(jerk_vals[:-1], dtype=np.float32)
+                jerk_z = abs(self._robust_z_score(latest_jerk, jerk_hist_vals))
+            else:
+                jerk_z = 0.0
+
+            # BBox area/aspect self-normalized z-scores
+            if tid in self._bbox_history and len(self._bbox_history[tid]) >= 6:
+                _, latest_area, latest_aspect = self._bbox_history[tid][-1]
+                area_hist = np.array([a for _, a, _ in self._bbox_history[tid][:-1]], dtype=np.float32)
+                aspect_hist = np.array([ar for _, _, ar in self._bbox_history[tid][:-1]], dtype=np.float32)
+                area_z = abs(self._robust_z_score(latest_area, area_hist))
+                aspect_z = abs(self._robust_z_score(latest_aspect, aspect_hist))
+            else:
+                area_z = 0.0
+                aspect_z = 0.0
+
+            # Count tests above threshold
+            tests = [
+                speed_z >= z_thresh,
+                accel_z >= z_thresh,
+                jerk_z >= z_thresh,
+                area_z >= z_thresh,
+                aspect_z >= z_thresh,
+            ]
+            triggered = sum(1 for t in tests if t)
+            tests_triggered += triggered
+            if triggered >= min_tests:
+                objects_flagged += 1
+
+        is_positive = objects_flagged >= 1 and tracks_checked > 0
+        return is_positive, {
+            'objects_flagged': objects_flagged,
+            'tracks_checked': tracks_checked,
+            'tracks_insufficient': tracks_insufficient,
+            'z_threshold': z_thresh,
+            'min_tests_required': min_tests,
+            'max_tracked': self._low_object_max_tracked,
+            'tests_triggered_total': tests_triggered
+        }
     
-    def crash_detected(self, frame: np.ndarray, frame_idx: int, result=None) -> tuple[bool, dict]:
+    def crash_detected(self, frame: np.ndarray, frame_idx: int, result=None, n_tracked: int = 0) -> tuple[bool, dict]:
         """Main crash detection function that checks multiple indicators.
         
         Args:
@@ -859,12 +984,17 @@ class ObjectTracker:
             return False, {}
     
         weights = {}
-        weights['huggingface_model'] = 3
+        weights['huggingface_model'] = 2
         weights['sudden_stop'] = 1
         weights['high_jerk'] = 1
         weights['person_detected'] = 3
         weights['sustained_stop'] = 3
         weights['direction_reversal'] = 2
+        # Low-object anomaly gets higher weight when few objects are tracked.
+        if n_tracked <= self._low_object_max_tracked:
+            weights['low_object_anomaly'] = 3
+        else:
+            weights['low_object_anomaly'] = 1
         # Normalize using softmax (exp and normalize)
         #total = sum(math.exp(v) for v in weights.values())
         #weights = {k: math.exp(v) / total for k, v in weights.items()}
@@ -925,6 +1055,15 @@ class ObjectTracker:
         }
         if dir_rev_result:
             confidence_score += weights['direction_reversal']
+
+        # 7. Low-object anomaly indicator (only when few objects are tracked)
+        low_obj_result, low_obj_details = self._indicator_low_object_anomaly(frame_idx, n_tracked)
+        indicators['low_object_anomaly'] = {
+            'positive': low_obj_result,
+            'details': low_obj_details
+        }
+        if low_obj_result:
+            confidence_score += weights['low_object_anomaly']
         
         # Debug output (uncomment to debug)
         # print(f"Debug - person_result: {person_result}, confidence_score: {confidence_score:.4f}, threshold: {self.crash_indicator_threshold:.4f}, weights: {weights}")
@@ -952,6 +1091,8 @@ class ObjectTracker:
             self.current_frame_shape = frame.shape[:2]  # for click -> image coordinate conversion
             # Run YOLO on preprocessed frame (CLAHE + gamma for snow/glare); draw on original
             frame_for_yolo = self.preprocess_frame(frame)
+            # Show the preprocessed frame in a separate window
+            cv2.imshow("Preprocessed", frame_for_yolo)
             # Vehicle classes only (COCO: car, motorcycle, bus, truck) for car-like / truck-like / motorcycle-like
             results = self.model.track(
                 frame_for_yolo,
@@ -991,6 +1132,7 @@ class ObjectTracker:
                         for box, id in zip(boxes, ids):
                             cx = (box[0] + box[2]) / 2.0
                             cy = (box[1] + box[3]) / 2.0
+                            self._update_bbox_history(int(id), box, frame_idx)
                             speed_px_s = self._update_velocity(int(id), cx, cy, frame_idx)
                             acceleration_px_s2 = self._update_acceleration(int(id), speed_px_s, frame_idx)
                             jerk_px_s3 = self._update_jerk(int(id), acceleration_px_s2, frame_idx)
@@ -1034,7 +1176,7 @@ class ObjectTracker:
             # Crash detection (check periodically to reduce computation)
             crash_detected = False
             if self.enable_crash_detection and frame_idx % self.crash_check_interval == 0:
-                crash_detected, indicators = self.crash_detected(frame, frame_idx, current_result)
+                crash_detected, indicators = self.crash_detected(frame, frame_idx, current_result, n_det)
                 if crash_detected:
                     self.last_crash_result = {
                         'is_crash': True,
@@ -1086,6 +1228,11 @@ class ObjectTracker:
                             print(f"     - Cells with flips: {details.get('cells_with_flips', 0)}")
                             print(f"     - Window frames: {details.get('window_frames', 0)}")
                             print(f"     - Cos threshold: {details.get('cos_threshold', 0):.2f}")
+                        elif name == 'low_object_anomaly' and 'objects_flagged' in details:
+                            print(f"     - Objects flagged: {details['objects_flagged']}")
+                            print(f"     - Tracks checked: {details.get('tracks_checked', 0)}")
+                            print(f"     - Z threshold: {details.get('z_threshold', 0):.2f}")
+                            print(f"     - Min tests required: {details.get('min_tests_required', 0)}")
                     
                     if negative_indicators:
                         print(f"\n❌ NEGATIVE INDICATORS ({len(negative_indicators)}):")
