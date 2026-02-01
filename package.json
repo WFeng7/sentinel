@@ -1,0 +1,13 @@
+{
+  "name": "sentinel-monorepo",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n frontend,backend -c cyan,magenta \"npm --prefix frontend run dev\" \"npm --prefix backend run dev\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "dependencies": {
+    "three": "^0.182.0"
+  }
+}
