@@ -429,28 +429,74 @@ export default function DashboardPage() {
     return { status: 'Info', statusColor: 'bg-metadata-3' }
   }
 
+  const buildIncidentRow = (incident) => {
+    const events = incident?.events
+    const eventList = events && typeof events === 'object' ? Object.keys(events) : []
+    const label = incident?.label || incident?.camera_id || 'Camera'
+    const title = eventList.length ? `${label} — ${eventList.join(', ')}` : `${label} incident`
+    const { status, statusColor } = scoreToStatus(incident?.score)
+    const timestamp = incident?.timestamp || ''
+    const relative = formatRelative(timestamp) || 'just now'
+    return {
+      id: incident?.id || `${incident?.camera_id}-${timestamp}`,
+      title,
+      status,
+      statusColor,
+      relative,
+      timestamp,
+      camera_id: incident?.camera_id,
+      label: incident?.label,
+      events: incident?.events,
+      score: incident?.score
+    }
+  }
+
   const incidentRows = useMemo(() => {
     const suppressed = suppressedIncidentIdsRef.current
-    return incidents.filter((incident) => !suppressed.has(incident?.id)).map((incident) => {
-      const events = incident?.events
-      const eventList = events && typeof events === 'object' ? Object.keys(events) : []
-      const label = incident?.label || incident?.camera_id || 'Camera'
-      const title = eventList.length ? `${label} — ${eventList.join(', ')}` : `${label} incident`
-      const { status, statusColor } = scoreToStatus(incident?.score)
-      const timestamp = incident?.timestamp || ''
-      return {
-        id: incident?.id || `${incident?.camera_id}-${timestamp}`,
-        title,
-        status,
-        statusColor,
-        relative: formatRelative(timestamp),
-        timestamp
+    const rows = []
+    const bucketLatest = new Map()
+    const windowMs = 5 * 60 * 1000
+
+    for (const incident of incidents) {
+      if (suppressed.has(incident?.id)) continue
+      const row = buildIncidentRow(incident)
+      const events = row.events && typeof row.events === 'object' ? Object.keys(row.events).sort().join(',') : ''
+      const bucketKey = `${row.camera_id || ''}|${events}`
+      const ts = new Date(row.timestamp).getTime()
+      if (Number.isNaN(ts)) {
+        rows.push(row)
+        continue
       }
+      const existing = bucketLatest.get(bucketKey)
+      if (!existing) {
+        bucketLatest.set(bucketKey, { row, ts })
+        continue
+      }
+      if (Math.abs(ts - existing.ts) <= windowMs) {
+        if (ts > existing.ts) {
+          bucketLatest.set(bucketKey, { row, ts })
+        }
+      } else {
+        rows.push(existing.row)
+        bucketLatest.set(bucketKey, { row, ts })
+      }
+    }
+
+    for (const { row } of bucketLatest.values()) {
+      rows.push(row)
+    }
+
+    const seen = new Set()
+    return rows.filter((row) => {
+      if (seen.has(row.id)) return false
+      seen.add(row.id)
+      return true
     })
   }, [incidents])
 
   useEffect(() => {
     if (!incidents.length) return
+    if (dashboardLoading) return
     const newest = incidents[0]
     if (!newest?.id) return
     if (processedIncidentIdsRef.current.has(newest.id)) return
@@ -459,8 +505,9 @@ export default function DashboardPage() {
     const cameraId = newest.camera_id
     const stream = streams.find((item) => item?.key === cameraId)
     if (!stream?.url) {
+      const row = buildIncidentRow(newest)
       lastIncidentIdRef.current = newest.id
-      setActiveIncident(newest)
+      setActiveIncident(row)
       setControlPanelOpen(true)
       if (typeof notifAudioRef.current?.play === 'function') {
         notifAudioRef.current.currentTime = 0
@@ -482,8 +529,9 @@ export default function DashboardPage() {
           suppressedIncidentIdsRef.current.add(newest.id)
           return
         }
+        const row = buildIncidentRow(newest)
         lastIncidentIdRef.current = newest.id
-        setActiveIncident(newest)
+        setActiveIncident(row)
         setControlPanelOpen(true)
         if (typeof notifAudioRef.current?.play === 'function') {
           notifAudioRef.current.currentTime = 0
@@ -491,15 +539,16 @@ export default function DashboardPage() {
         }
       })
       .catch(() => {
+        const row = buildIncidentRow(newest)
         lastIncidentIdRef.current = newest.id
-        setActiveIncident(newest)
+        setActiveIncident(row)
         setControlPanelOpen(true)
         if (typeof notifAudioRef.current?.play === 'function') {
           notifAudioRef.current.currentTime = 0
           notifAudioRef.current.play().catch(() => {})
         }
       })
-  }, [incidents, streams])
+  }, [incidents, streams, dashboardLoading])
 
   const runRAGFromVLM = async (vlmPayload) => {
     if (!vlmPayload) return

@@ -14,6 +14,31 @@ from .retriever import PolicyRetriever
 from .schemas import RetrievedExcerpt, DecisionInput, DecisionOutput, SupportingExcerpt
 from .prompt import build_decision_prompt
 
+RAG_STATS = {"requests": 0, "doc_words": 0}
+
+
+def _count_words(text: str) -> int:
+    return len(str(text).split()) if text else 0
+
+
+def _record_rag_stats(supporting: list[SupportingExcerpt]) -> None:
+    RAG_STATS["requests"] += 1
+    doc_words = 0
+    for ex in supporting or []:
+        doc_words += _count_words(getattr(ex, "text", ""))
+    RAG_STATS["doc_words"] += doc_words
+
+
+def get_rag_stats() -> dict[str, float]:
+    reqs = RAG_STATS["requests"]
+    doc_words = RAG_STATS["doc_words"]
+    avg_doc_words = (doc_words / reqs) if reqs else 0
+    return {
+        "requests": reqs,
+        "doc_words": doc_words,
+        "avg_doc_words_per_request": avg_doc_words,
+    }
+
 class DecisionEngine:
     """
     Consumes event context, retrieves relevant policies, produces structured decision.
@@ -69,7 +94,7 @@ class DecisionEngine:
         mode = os.environ.get("RAG_MODE", "llm").lower()
         if mode != "llm":
             explanation = f"Retrieved {len(supporting)} policy excerpts for context."
-            return DecisionOutput(
+            output = DecisionOutput(
                 decision={
                     "event_type_candidates": inp.event_type_candidates,
                     "signals": inp.signals,
@@ -78,11 +103,15 @@ class DecisionEngine:
                 explanation=explanation,
                 supporting_excerpts=supporting,
             )
+            _record_rag_stats(supporting)
+            return output
 
         if not self._api_key:
             raise ValueError("OPENAI_API_KEY required for RAG decision engine")
 
-        return self._decide_with_llm(inp, excerpts, supporting)
+        output = self._decide_with_llm(inp, excerpts, supporting)
+        _record_rag_stats(supporting)
+        return output
 
     def _decide_with_llm(
         self,
