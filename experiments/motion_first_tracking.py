@@ -1114,7 +1114,7 @@ class MotionFirstTracker:
 def main():
     import argparse
     _script_dir = os.path.dirname(os.path.abspath(__file__))
-    _default_video = os.path.join(_script_dir, "test-video-processing", "2026-01-30 15-20-11.mov")
+    _default_video = os.path.join(_script_dir, "test-video-processing", "2026-01-30 15-25-54.mov")
     p = argparse.ArgumentParser(description="Motion-first incident detection")
     p.add_argument("source", nargs="?", default=_default_video, help="Video file or stream URL")
     p.add_argument("--yolo", default="yolo26s.pt", help="YOLO model path")
