@@ -70,28 +70,22 @@ function Header({ condensed }) {
 
 export default function PageShell({ pathKey, condensed, wide = false, children }) {
   const content = pageMeta[pathKey]
-  const containerWidth = wide ? 'max-w-none' : 'max-w-4xl'
+
+  if (wide) {
+    return (
+      <main className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
+        <div>{children}</div>
+        <div className="fixed top-0 left-0 right-0 z-40 pt-4 md:pt-6">
+          <Header condensed={condensed} />
+        </div>
+      </main>
+    )
+  }
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950">
       <Header condensed={condensed} />
-      <div className={`mx-auto ${containerWidth} px-6 pb-16 pt-32`}>
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-8 shadow-2xl shadow-slate-900/40">
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-400">{content.eyebrow}</p>
-          <h1 className="mt-4 text-3xl font-semibold text-white">{content.heading}</h1>
-          <p className="mt-3 text-slate-300">{content.description}</p>
-          <div className="mt-6 flex flex-wrap gap-3 text-sm">
-            <span className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-200">
-              Vite
-            </span>
-            <span className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-200">
-              React
-            </span>
-            <span className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-slate-200">
-              Tailwind
-            </span>
-          </div>
-        </div>
+      <div className="mx-auto max-w-4xl px-8 pb-32 pt-32 md:px-12 md:pt-40">
         {children}
       </div>
     </main>

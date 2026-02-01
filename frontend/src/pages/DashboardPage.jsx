@@ -194,7 +194,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <div className="grid h-full w-full grid-cols-5 grid-rows-10 gap-0">
+      <div className="grid h-full w-full grid-cols-5 grid-rows-10 gap-2 p-2">
         {visibleStreams.map((stream, index) => {
           const streamKey = stream.key
           const isHidden = hiddenKeys.has(streamKey)

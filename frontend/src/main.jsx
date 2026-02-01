@@ -4,9 +4,14 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App.jsx'
 import './index.css'
 
+// Service worker: only in production; unregister in dev so changes show immediately
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {})
+    if (import.meta.env.PROD) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {})
+    } else {
+      navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister()))
+    }
   })
 }
 
