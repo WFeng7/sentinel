@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Route, Routes, useLocation } from 'react-router-dom'
 import PageShell, { pageMeta } from './layout/PageShell.jsx'
-import AboutPage from './pages/AboutPage.jsx'
 import DashboardPage from './pages/DashboardPage.jsx'
-import DocsPage from './pages/DocsPage.jsx'
 import HomePage from './pages/HomePage.jsx'
 
 export default function App() {

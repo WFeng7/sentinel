@@ -456,7 +456,9 @@ export default function DashboardPage() {
       camera_id: incident?.camera_id,
       label: incident?.label,
       events: incident?.events,
-      score: incident?.score
+      score: incident?.score,
+      summary: incident?.summary,
+      rag_explanation: incident?.rag_explanation,
     }
   }
 
@@ -560,7 +562,7 @@ export default function DashboardPage() {
   }, [incidents, streams, dashboardLoading])
 
   const runRAGFromVLM = async (vlmPayload) => {
-    if (!vlmPayload) return
+    if (!vlmPayload) return null
     setRagLoading(true)
     setRagError('')
     setRagResult(null)
@@ -574,8 +576,10 @@ export default function DashboardPage() {
       if (!res.ok) throw new Error('Request failed')
       const data = await res.json()
       setRagResult(data)
+      return data
     } catch (e) {
       setRagError(e.message || 'RAG failed')
+      return null
     } finally {
       setRagLoading(false)
     }
@@ -598,7 +602,39 @@ export default function DashboardPage() {
       })
       setVlmResult(data)
       setVlmLastRegenerated(Date.now())
-      await runRAGFromVLM(data)
+      const ragData = await runRAGFromVLM(data)
+      // Add incident with combined VLM + RAG output
+      if (data && ragData && data.status === 'success') {
+        try {
+          const ev = data.detailed_analysis?.event || {}
+          const severity = ev.severity || 'none'
+          const severityScores = { critical: 6, high: 5, medium: 4, low: 3, none: 1 }
+          const score = severityScores[severity] || 2
+          const events = {}
+          if (ev.type) events[ev.type] = true
+          if (severity) events[severity] = true
+          if (ragData.action) events[ragData.action] = true
+          if (ragData.priority) events[ragData.priority] = true
+          await fetch(`${import.meta.env.VITE_DEPLOYMENT_API_URL ?? 'http://localhost:8000'}/incidents`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              camera_id: stream.key,
+              label: safeLabel,
+              score: score,
+              events: events,
+              timestamp: new Date().toISOString(),
+              summary: data.summary,
+              rag_explanation: ragData.explanation || ragData.supporting_excerpts?.[0]?.text || '',
+            })
+          })
+        } catch {}
+      }
+      // Refresh incidents so new VLM+RAG output appears in recent incidents
+      try {
+        const { incidents: list } = await fetchIncidents(20)
+        setIncidents(Array.isArray(list) ? list : [])
+      } catch {}
     } catch (e) {
       setVlmError(e.message || 'VLM failed')
     } finally {
@@ -1083,26 +1119,44 @@ export default function DashboardPage() {
                   <div className="space-y-2 text-xs text-slate-300">
                     {incidentRows.length ? (
                       incidentRows.map((incident) => (
-                        <button
+                        <div
                           key={incident.id}
-                          className="flex w-full items-start justify-between gap-3 border border-white/10 bg-slate-950/60 px-3 py-2 text-left transition hover:border-white/20 hover:bg-slate-900/70"
-                          onClick={() => setActiveIncident(incident)}
-                          type="button"
+                          className="border border-white/10 bg-slate-950/60 transition hover:border-white/20 hover:bg-slate-900/70"
                         >
-                          <div className="space-y-1">
-                            <span className="block text-sm font-semibold text-slate-100">{incident.title}</span>
-                            <span className="block text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                              {incident.timestamp}
-                            </span>
+                          <div className="flex items-start justify-between gap-3 px-3 py-2">
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <span className="block text-sm font-semibold text-slate-100">{incident.title}</span>
+                              <span className="block text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                                {incident.timestamp}
+                              </span>
+                            </div>
+                            <div className="flex flex-col items-end gap-1 text-[11px] text-slate-400">
+                              <span className="flex items-center gap-2">
+                                <span className={`h-2 w-2 rounded-full ${incident.statusColor}`} />
+                                {incident.status}
+                              </span>
+                              <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{incident.relative}</span>
+                            </div>
                           </div>
-                          <div className="flex flex-col items-end gap-1 text-[11px] text-slate-400">
-                            <span className="flex items-center gap-2">
-                              <span className={`h-2 w-2 rounded-full ${incident.statusColor}`} />
-                              {incident.status}
-                            </span>
-                            <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{incident.relative}</span>
-                          </div>
-                        </button>
+                          {(incident.summary || incident.rag_explanation) && (
+                            <div className="insight-scroll max-h-48 overflow-y-auto overflow-x-hidden border-t border-white/10 bg-slate-900/30 px-3 py-2">
+                              <div className="space-y-3 text-slate-200">
+                                {incident.summary && (
+                                  <div>
+                                    <h4 className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">VLM Analysis</h4>
+                                    <MarkdownRenderer content={incident.summary} className="text-xs leading-relaxed" />
+                                  </div>
+                                )}
+                                {incident.rag_explanation && (
+                                  <div className={incident.summary ? 'border-t border-white/10 pt-3' : ''}>
+                                    <h4 className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">RAG Decision</h4>
+                                    <MarkdownRenderer content={incident.rag_explanation} className="text-xs leading-relaxed" />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       ))
                     ) : (
                       <div className="border border-white/10 bg-slate-950/50 px-3 py-2 text-[11px] uppercase tracking-[0.18em] text-slate-500">
