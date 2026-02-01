@@ -537,7 +537,7 @@ class MotionFirstTracker:
                 min_accel = min(accels[-5:]) if len(accels) >= 5 else min(accels)
                 if min_accel < -15:
                     count += 1
-        raw = min(count * 0.5, 2.0)
+        raw = min(count * 0.3, 2.0)
         contrib = weight * raw
         event = "decel" if raw > 0 else ""
         return contrib, event
@@ -789,7 +789,7 @@ class MotionFirstTracker:
 def main():
     import argparse
     _script_dir = os.path.dirname(os.path.abspath(__file__))
-    _default_video = os.path.join(_script_dir, "test-video-processing", "2026-01-31 23-11-57.mov")
+    _default_video = os.path.join(_script_dir, "test-video-processing", "2026-01-30 15-20-11.mov")
     p = argparse.ArgumentParser(description="Motion-first incident detection")
     p.add_argument("source", nargs="?", default=_default_video, help="Video file or stream URL")
     p.add_argument("--yolo", default="yolo26s.pt", help="YOLO model path")
