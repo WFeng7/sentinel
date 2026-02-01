@@ -7,11 +7,12 @@ import os
 
 from .decision_engine import DecisionEngine, DecisionInput, DecisionOutput
 from .ingestion import DocumentIngestionPipeline
-from .providers import MockPolicyProvider, S3PolicyProvider
+from .providers import MockPolicyProvider, PolicyProvider, S3PolicyProvider
 from .retriever import PolicyRetriever
 from .schemas import PolicyDocument, RetrievedExcerpt
 
 __all__ = [
+    "PolicyProvider",
     "S3PolicyProvider",
     "MockPolicyProvider",
     "PolicyDocument",
@@ -26,7 +27,7 @@ __all__ = [
 
 
 def create_rag_pipeline(
-    provider: S3PolicyProvider | MockPolicyProvider | None = None,
+    provider: PolicyProvider | None = None,
     *,
     store_type: str | None = None,
     provider_type: str | None = None,

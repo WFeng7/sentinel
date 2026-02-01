@@ -1,16 +1,26 @@
 #TODO: fill in correct S3 bucket and prefix
 
 """
+- PolicyProvider: ABC for document sources
 - S3PolicyProvider: AWS S3
 - MockPolicyProvider: minimal dev fallback
 """
 
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 from .schemas import PolicyDocument
 
 
-class S3PolicyProvider:
+class PolicyProvider(ABC):
+    """Abstract base for policy document sources."""
+
+    @abstractmethod
+    def fetch_documents(self) -> list[PolicyDocument]:
+        ...
+
+
+class S3PolicyProvider(PolicyProvider):
     """Fetch policy documents from S3. Supports PDF, txt, md."""
 
     def __init__(
@@ -81,7 +91,7 @@ class S3PolicyProvider:
         return ""
 
 
-class MockPolicyProvider:
+class MockPolicyProvider(PolicyProvider):
     """Minimal hardcoded docs for dev/testing."""
 
     def fetch_documents(self) -> list[PolicyDocument]:
