@@ -9,6 +9,7 @@ const DASHBOARD_LOADING_MESSAGES = [
   'Balancing live feeds across the grid',
   'Syncing edge frames to the dashboard',
   'Hunting for the cleanest frames',
+  'Hunting for the cleanest frames',
   'Stabilizing the live view'
 ]
 
@@ -45,35 +46,41 @@ export default function DashboardPage() {
   const [expandedMessageIndex, setExpandedMessageIndex] = useState(0)
   const [expandedLoading, setExpandedLoading] = useState(false)
   const [showMap, setShowMap] = useState(false)
+
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
-  const mapMarkersRef = useRef([])
+
+  // keep markers around; don't rebuild on each click
+  const markersLayerRef = useRef(null) // L.LayerGroup
+  const markersByKeyRef = useRef(new Map()) // key -> L.Marker
+  const activeKeyRef = useRef(null)
+
   const orderKey = 'sentinel.cameraOrder.v1'
 
   const incidents = [
     {
       id: 'incident-1',
-      title: 'Motion spike detected',
+      title: 'Multi-car collision reported',
       status: 'Critical',
       statusColor: 'bg-metadata-4',
-      relative: '2m ago',
-      timestamp: '2026-01-31 14:22'
+      relative: '3m ago',
+      timestamp: '2026-02-01 18:08'
     },
     {
       id: 'incident-2',
-      title: 'Access door left open',
+      title: 'Traffic jam forming near merge',
       status: 'Alert',
       statusColor: 'bg-metadata-2',
-      relative: '11m ago',
-      timestamp: '2026-01-31 14:13'
+      relative: '12m ago',
+      timestamp: '2026-02-01 17:59'
     },
     {
       id: 'incident-3',
-      title: 'Shift change logged',
+      title: 'Heavy rain reducing visibility',
       status: 'Info',
       statusColor: 'bg-metadata-3',
-      relative: '28m ago',
-      timestamp: '2026-01-31 13:56'
+      relative: '34m ago',
+      timestamp: '2026-02-01 17:37'
     }
   ]
 
@@ -278,21 +285,7 @@ export default function DashboardPage() {
 
   const visibleCount = searchResults.length
   const loadedCount = searchResults.filter((stream) => streamLoadStates[stream.key]).length
-  const dashboardLoading =
-    (streams.length === 0 && !error) || (visibleCount > 0 && loadedCount / visibleCount < 0.25)
-
-  useEffect(() => {
-    if (!visibleStreams.length) return
-    visibleStreams.forEach((stream, index) => {
-      const label = stream.label || `Camera ${index + 1}`
-      console.log('[Map] Camera coords', {
-        key: stream.key,
-        label,
-        lat: stream.lat ?? null,
-        lng: stream.lng ?? null
-      })
-    })
-  }, [visibleStreams])
+  const dashboardLoading = visibleCount > 0 && loadedCount !== visibleCount
 
   useEffect(() => {
     if (!dashboardLoading) {
@@ -341,66 +334,130 @@ export default function DashboardPage() {
     }
   }
 
+  // Create map ONCE (dark tiles). Keep container mounted; don't destroy on hide.
   useEffect(() => {
-    if (!showMap) {
-      if (mapRef.current) {
-        mapRef.current.remove()
-        mapRef.current = null
-      }
-      mapMarkersRef.current = []
-      return
-    }
+    if (!mapContainerRef.current) return
+    if (mapRef.current) return
 
-    if (!mapRef.current && mapContainerRef.current) {
-      const mapInstance = L.map(mapContainerRef.current, {
-        center: [41.824, -71.4128],
-        zoom: 12,
-        zoomControl: true,
-        scrollWheelZoom: true
-      })
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; OpenStreetMap contributors'
-      }).addTo(mapInstance)
-      mapRef.current = mapInstance
-    }
-  }, [showMap])
+    const mapInstance = L.map(mapContainerRef.current, {
+      center: [41.824, -71.4128],
+      zoom: 12,
+      zoomControl: true,
+      scrollWheelZoom: true
+    })
 
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+    }).addTo(mapInstance)
+
+    markersLayerRef.current = L.layerGroup().addTo(mapInstance)
+    mapRef.current = mapInstance
+
+    return () => {
+      try {
+        markersByKeyRef.current.clear()
+      } catch {}
+      try {
+        mapInstance.remove()
+      } catch {}
+      mapRef.current = null
+      markersLayerRef.current = null
+      activeKeyRef.current = null
+    }
+  }, [])
+
+  // Incremental marker sync: build/update/remove without full rebuilds
   useEffect(() => {
-    if (!mapRef.current) return
-    const mapInstance = mapRef.current
-    mapMarkersRef.current.forEach((marker) => marker.remove())
-    mapMarkersRef.current = []
+    if (!mapRef.current || !markersLayerRef.current) return
 
+    const layer = markersLayerRef.current
+    const byKey = markersByKeyRef.current
+
+    // flat pink pins (#f27fa5), no glow
     const baseStyle =
-      'width:10px;height:10px;border-radius:9999px;background:rgba(34,211,238,0.9);border:1px solid rgba(255,255,255,0.6);box-shadow:0 0 10px rgba(34,211,238,0.6);'
+      'width:16px;height:16px;border-radius:9999px;background:#f27fa5;border:2px solid rgba(255,255,255,0.95);'
     const activeStyle =
-      'width:14px;height:14px;border-radius:9999px;background:rgba(56,189,248,0.95);border:1px solid rgba(255,255,255,0.9);box-shadow:0 0 14px rgba(56,189,248,0.8);'
+      'width:22px;height:22px;border-radius:9999px;background:#f27fa5;border:2px solid rgba(255,255,255,1);'
+
+    const nextKeys = new Set()
 
     visibleStreams.forEach((stream, index) => {
-      const lat =
-        typeof stream.lat === 'number'
-          ? stream.lat
-          : 41.824 + ((index % 7) - 3) * 0.01
-      const lng =
-        typeof stream.lng === 'number'
-          ? stream.lng
-          : -71.4128 + (Math.floor(index / 7) - 3) * 0.01
-      const isActive = activeLocation?.key === stream.key
+      if (typeof stream.lat !== 'number' || typeof stream.lng !== 'number') return
+
+      const key = stream.key
+      nextKeys.add(key)
+
+      const label = stream.label || `Camera ${index + 1}`
+      const isActive = (activeLocation?.key ?? null) === key
+
+      let marker = byKey.get(key)
+      if (!marker) {
+        const icon = L.divIcon({
+          className: '',
+          html: `<div data-pin="1" style="${isActive ? activeStyle : baseStyle}"></div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11]
+        })
+
+        marker = L.marker([stream.lat, stream.lng], { icon })
+
+        marker.on('click', () => {
+          handleOpenStream(stream)
+          handleLocationClick(stream, label)
+        })
+
+        marker.addTo(layer)
+        byKey.set(key, marker)
+        return
+      }
+
+      const ll = marker.getLatLng()
+      if (ll.lat !== stream.lat || ll.lng !== stream.lng) {
+        marker.setLatLng([stream.lat, stream.lng])
+      }
+    })
+
+    for (const [key, marker] of byKey.entries()) {
+      if (!nextKeys.has(key)) {
+        try {
+          marker.remove()
+        } catch {}
+        byKey.delete(key)
+      }
+    }
+  }, [visibleStreams]) // IMPORTANT: NOT dependent on activeLocation
+
+  // Update only the active marker style (fast)
+  useEffect(() => {
+    if (!markersLayerRef.current) return
+
+    const byKey = markersByKeyRef.current
+    const prevKey = activeKeyRef.current
+    const nextKey = activeLocation?.key ?? null
+
+    if (prevKey === nextKey) return
+
+    const baseStyle =
+      'width:16px;height:16px;border-radius:9999px;background:#f27fa5;border:2px solid rgba(255,255,255,0.95);'
+    const activeStyle =
+      'width:22px;height:22px;border-radius:9999px;background:#f27fa5;border:2px solid rgba(255,255,255,1);'
+
+    const setMarkerStyle = (key, style) => {
+      const marker = byKey.get(key)
+      if (!marker) return
       const icon = L.divIcon({
         className: '',
-        html: `<div style="${isActive ? activeStyle : baseStyle}"></div>`,
-        iconSize: [14, 14],
-        iconAnchor: [7, 7]
+        html: `<div data-pin="1" style="${style}"></div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11]
       })
-      const marker = L.marker([lat, lng], { icon })
-      marker.addTo(mapInstance)
-      marker.on('click', () => {
-        handleOpenStream(stream)
-        handleLocationClick(stream, stream.label || `Camera ${index + 1}`)
-      })
-      mapMarkersRef.current.push(marker)
-    })
-  }, [visibleStreams, activeLocation])
+      marker.setIcon(icon)
+    }
+
+    if (prevKey) setMarkerStyle(prevKey, baseStyle)
+    if (nextKey) setMarkerStyle(nextKey, activeStyle)
+    activeKeyRef.current = nextKey
+  }, [activeLocation])
 
   useEffect(() => {
     if (!mapRef.current) return
@@ -423,17 +480,14 @@ export default function DashboardPage() {
   }, [searchResults.length])
 
   return (
-    <section
-      className="relative h-screen w-screen bg-slate-950"
-      style={{ cursor: 'default' }}
-    >
+    <section className="relative h-screen w-screen bg-slate-950" style={{ cursor: 'default' }}>
       <style>{`
         iframe {
-          scrollbar-width: none; /* Firefox */
-          -ms-overflow-style: none; /* IE/Edge */
+          scrollbar-width: none;
+          -ms-overflow-style: none;
         }
         iframe::-webkit-scrollbar {
-          display: none; /* Chrome/Safari */
+          display: none;
         }
         .sentinel-spinner {
           width: var(--spinner-size, 34px);
@@ -465,6 +519,7 @@ export default function DashboardPage() {
           100% { transform: translateX(220%); }
         }
       `}</style>
+
       {expandedKey && (
         <div
           className={`fixed top-0 bottom-0 right-0 z-[2147483647] flex items-center justify-center bg-black/70 transition-opacity duration-300 ${
@@ -482,7 +537,7 @@ export default function DashboardPage() {
             onClick={(event) => event.stopPropagation()}
             role="presentation"
           >
-            <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-sm border border-white/10 bg-slate-900/70 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100 backdrop-blur">
+            <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-sm bg-slate-900/70 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100 backdrop-blur">
               {expandedLabel}
             </div>
             <button
@@ -498,9 +553,7 @@ export default function DashboardPage() {
                 <div className="sentinel-sheen flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-slate-900/80 px-6 py-5 text-slate-100 shadow-2xl">
                   <div className="sentinel-spinner" />
                   <div className="text-[11px] uppercase tracking-[0.3em] text-slate-400">Loading live view</div>
-                  <div className="text-sm text-slate-200">
-                    {EXPANDED_LOADING_MESSAGES[expandedMessageIndex]}
-                  </div>
+                  <div className="text-sm text-slate-200">{EXPANDED_LOADING_MESSAGES[expandedMessageIndex]}</div>
                 </div>
               </div>
             )}
@@ -526,9 +579,7 @@ export default function DashboardPage() {
           <div className="sentinel-sheen flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-slate-900/80 px-6 py-5 text-slate-100 shadow-2xl">
             <div className="sentinel-spinner" />
             <div className="text-[11px] uppercase tracking-[0.3em] text-slate-400">Loading dashboard</div>
-            <div className="text-sm text-slate-200">
-              {DASHBOARD_LOADING_MESSAGES[dashboardMessageIndex]}
-            </div>
+            <div className="text-sm text-slate-200">{DASHBOARD_LOADING_MESSAGES[dashboardMessageIndex]}</div>
             <div className="text-[10px] uppercase tracking-[0.24em] text-slate-500">
               {loadedCount} of {visibleCount} feeds live
             </div>
@@ -588,8 +639,9 @@ export default function DashboardPage() {
               </div>
             </div>
           )}
-            <div className="flex h-full flex-col gap-5 p-6">
-              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Control Panel</div>
+
+          <div className="flex h-full flex-col gap-5 p-6">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Control Panel</div>
 
             <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
               <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400">
@@ -641,33 +693,28 @@ export default function DashboardPage() {
                 <span>Show map</span>
                 <span className="text-sm">{showMap ? '−' : '+'}</span>
               </button>
-              {showMap && (
-                <div className="rounded-md border border-white/10 bg-slate-950/80 p-3">
-                  <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-500">
-                    <span>Providence map</span>
-                    <span>OSM</span>
-                  </div>
-                  <div
-                    ref={mapContainerRef}
-                    className="aspect-square overflow-hidden rounded-md border border-white/10"
-                  />
-                  <div className="mt-2 flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-500">
-                    <span>Scroll to zoom</span>
-                    <span>Drag to pan</span>
-                  </div>
-                </div>
-              )}
+
+              {/* keep container mounted so map stays alive */}
+              <div
+                className={`rounded-md border border-white/10 bg-slate-950/80 transition-all duration-200 ${
+                  showMap ? 'opacity-100' : 'pointer-events-none opacity-0 h-0 overflow-hidden p-0 border-transparent'
+                }`}
+              >
+                <div
+                  ref={mapContainerRef}
+                  className="aspect-square overflow-hidden rounded-md border border-white/10"
+                  style={{ background: '#0b1020' }}
+                /> 
+              </div>
             </div>
 
             {activeLocation && (vlmLoading || vlmResult || vlmError) && (
-              <div className="mb-4 rounded-md border border-white/10 bg-slate-900/60 p-4 text-xs text-slate-200">
+              <div className="rounded-md border border-white/10 bg-slate-900/60 p-4 text-xs text-slate-200">
                 <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-500">
                   <span>VLM Insight</span>
                   <div className="flex items-center gap-2">
                     {activeLocation?.label && (
-                      <span className="max-w-[140px] truncate text-slate-400">
-                        {activeLocation.label}
-                      </span>
+                      <span className="max-w-[140px] truncate text-slate-400">{activeLocation.label}</span>
                     )}
                     <button
                       className="flex h-5 w-5 items-center justify-center rounded-sm border border-white/10 bg-slate-900/70 text-[10px] font-semibold text-slate-200 transition hover:bg-slate-800"
@@ -690,9 +737,7 @@ export default function DashboardPage() {
                     <span>Requesting live analysis…</span>
                   </div>
                 )}
-                {vlmError && !vlmLoading && (
-                  <div className="mt-2 text-rose-300">{vlmError}</div>
-                )}
+                {vlmError && !vlmLoading && <div className="mt-2 text-rose-300">{vlmError}</div>}
                 {vlmResult && !vlmLoading && (
                   <div className="mt-2 space-y-2 text-slate-200">
                     <p className="text-sm text-slate-100">{vlmResult.summary}</p>
@@ -769,9 +814,7 @@ export default function DashboardPage() {
                         <span className={`h-2 w-2 rounded-full ${incident.statusColor}`} />
                         {incident.status}
                       </span>
-                      <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
-                        {incident.relative}
-                      </span>
+                      <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{incident.relative}</span>
                     </div>
                   </button>
                 ))}
@@ -780,11 +823,7 @@ export default function DashboardPage() {
           </div>
         </aside>
 
-        <div
-          className={`relative h-full transition-all duration-300 ${
-            controlPanelOpen ? 'w-2/3' : 'w-full'
-          }`}
-        >
+        <div className={`relative h-full transition-all duration-300 ${controlPanelOpen ? 'w-2/3' : 'w-full'}`}>
           <div
             className="grid h-full w-full gap-0"
             style={{
@@ -850,18 +889,17 @@ export default function DashboardPage() {
                   >
                     {isHidden ? '+' : '-'}
                   </button>
-                  <div
-                    className={`pointer-events-none absolute bottom-2 left-2 right-2 z-20 rounded-sm border border-white/10 bg-slate-900/80 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100 transition ${
-                      showLabels ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                    } ${showLabels ? '' : 'hidden group-hover:block'}`}
-                  >
-                    <span className="block truncate">{label}</span>
-                  </div>
+
+                  {/* Labels: NO border, NO hover behavior */}
+                  {showLabels && (
+                    <div className="pointer-events-none absolute bottom-2 left-2 right-2 z-20 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100">
+                      <span className="block truncate">{label}</span>
+                    </div>
+                  )}
+
                   <iframe
                     allow="autoplay; fullscreen"
-                    className={`absolute inset-0 z-0 h-full w-full ${
-                      isActiveTile ? 'pointer-events-auto' : 'pointer-events-none'
-                    }`}
+                    className={`absolute inset-0 z-0 h-full w-full ${isActiveTile ? 'pointer-events-auto' : 'pointer-events-none'}`}
                     loading="lazy"
                     src={`/player.html?src=${encodeURIComponent(stream.url)}${
                       isActiveTile ? '&controls=1' : '&hideCursor=1'
