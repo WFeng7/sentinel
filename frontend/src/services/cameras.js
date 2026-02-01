@@ -44,7 +44,9 @@ function normalizeCameraEntry(entry, index) {
   if (entry && typeof entry === 'object') {
     return {
       url: entry.url ?? entry.stream ?? entry.src ?? '',
-      label: entry.label ?? entry.name ?? entry.location ?? `Camera ${index + 1}`
+      label: entry.label ?? entry.name ?? entry.location ?? `Camera ${index + 1}`,
+      lat: entry.lat ?? entry.latitude ?? null,
+      lng: entry.lng ?? entry.lon ?? entry.longitude ?? null
     }
   }
 
@@ -64,4 +66,20 @@ export async function fetchCameraStreams(limit = 50, refresh = false) {
   const data = await response.json()
   const list = Array.isArray(data.cameras) ? data.cameras : Array.isArray(data.streams) ? data.streams : []
   return list.map((entry, index) => normalizeCameraEntry(entry, index)).filter((entry) => entry.url)
+}
+
+export async function fetchLocationVlm({ cameraId, label, streamUrl }) {
+  const response = await fetch(`${API_BASE}/vlm/location`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      camera_id: cameraId,
+      label,
+      stream_url: streamUrl
+    })
+  })
+  if (!response.ok) {
+    throw new Error('Failed to fetch VLM analysis')
+  }
+  return response.json()
 }

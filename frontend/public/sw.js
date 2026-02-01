@@ -1,4 +1,4 @@
-const CACHE_NAME = 'sentinel-static-v1'
+const CACHE_NAME = 'sentinel-static-v6'
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

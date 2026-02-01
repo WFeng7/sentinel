@@ -27,24 +27,8 @@ export default function App() {
       <Route
         path="/"
         element={
-          <PageShell pathKey="/" condensed={condensed}>
+          <PageShell pathKey="/" condensed={condensed} wide>
             <HomePage />
-          </PageShell>
-        }
-      />
-      <Route
-        path="/about"
-        element={
-          <PageShell pathKey="/" condensed={condensed}>
-            <AboutPage />
-          </PageShell>
-        }
-      />
-      <Route
-        path="/docs"
-        element={
-          <PageShell pathKey="/" condensed={condensed}>
-            <DocsPage />
           </PageShell>
         }
       />

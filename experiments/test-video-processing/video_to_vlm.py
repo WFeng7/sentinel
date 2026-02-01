@@ -108,7 +108,7 @@ def main():
     result = analyzer.analyze_from_dict(ctx, keyframes=keyframes)
 
     print("\n--- VLM Structured Output ---")
-    print(json.dumps(result, indent=2))
+    print(json.dumps(result.model_dump(mode="json"), indent=2))
     print("\n--- Human Narrative ---")
     print(render_human_narrative(result))
 
