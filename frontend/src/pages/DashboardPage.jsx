@@ -4,8 +4,6 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { fetchCameraStreams, fetchHealth, fetchLocationVlm } from '../services/cameras.js'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
-import VLMRAGTile from '../components/VLMRAGTile.jsx'
-import { useVLMRAGLoop } from '../hooks/useVLMRAGLoop.js'
 
 const DASHBOARD_LOADING_MESSAGES = [
   'Warming up camera streams',
@@ -38,15 +36,11 @@ export default function DashboardPage() {
   const [showLabels, setShowLabels] = useState(true)
   const [activeIncident, setActiveIncident] = useState(null)
   const [activeLocation, setActiveLocation] = useState(null)
-  const [vlmResult, setVlmResult] = useState(null)
-  const [vlmLoading, setVlmLoading] = useState(false)
-  const [vlmError, setVlmError] = useState('')
-  const [vlmRefreshInterval, setVlmRefreshInterval] = useState(null)
-  const [vlmCountdown, setVlmCountdown] = useState(60)
   const [minimizedSections, setMinimizedSections] = useState({
     filters: false,
     incidents: false,
     vlm: false,
+    rag: false,
     map: false
   })
   const [uptime, setUptime] = useState(100)
@@ -57,7 +51,12 @@ export default function DashboardPage() {
   const [expandedMessageIndex, setExpandedMessageIndex] = useState(0)
   const [expandedLoading, setExpandedLoading] = useState(false)
   const [showMap, setShowMap] = useState(false)
-  const [vlmRAGEnabled, setVlmRAGEnabled] = useState(new Set())
+  const [vlmResult, setVlmResult] = useState(null)
+  const [vlmLoading, setVlmLoading] = useState(false)
+  const [vlmError, setVlmError] = useState('')
+  const [ragResult, setRagResult] = useState(null)
+  const [ragLoading, setRagLoading] = useState(false)
+  const [ragError, setRagError] = useState('')
 
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
@@ -233,15 +232,6 @@ export default function DashboardPage() {
   }, [uptimeSamples])
 
   useEffect(() => {
-    return () => {
-      // Cleanup interval on unmount
-      if (vlmRefreshInterval) {
-        clearInterval(vlmRefreshInterval)
-      }
-    }
-  }, [vlmRefreshInterval])
-
-  useEffect(() => {
     if (!expandedKey) return
     const raf = requestAnimationFrame(() => setExpandedVisible(true))
     return () => cancelAnimationFrame(raf)
@@ -335,6 +325,88 @@ export default function DashboardPage() {
     setExpandedVisible(false)
   }
 
+  const toString = (value) => {
+    if (value === null || value === undefined) return ''
+    return typeof value === 'string' ? value : String(value)
+  }
+
+  const mapVlmToRagInput = (vlmPayload) => {
+    const detailed = vlmPayload?.detailed_analysis ?? vlmPayload?.result ?? vlmPayload ?? {}
+    const ev = detailed?.event ?? null
+    const ragInfo = detailed?.rag ?? null
+    const evidence = detailed?.evidence ?? []
+
+    const eventTypeCandidates = []
+    if (ev?.type) eventTypeCandidates.push(toString(ev.type))
+    if (ev?.category) eventTypeCandidates.push(toString(ev.category?.value ?? ev.category))
+    if (Array.isArray(ragInfo?.tags)) eventTypeCandidates.push(...ragInfo.tags.slice(0, 5).map(toString))
+
+    const signals = []
+    if (Array.isArray(evidence)) {
+      evidence.forEach((item) => {
+        if (!item) return
+        if (typeof item === 'object') {
+          if (item.claim) signals.push(toString(item.claim).slice(0, 200))
+          if (Array.isArray(item.signals)) signals.push(...item.signals.slice(0, 3).map(toString))
+        } else {
+          signals.push(toString(item).slice(0, 200))
+        }
+      })
+    }
+    if (Array.isArray(ragInfo?.queries)) signals.push(...ragInfo.queries.slice(0, 3).map(toString))
+
+    return {
+      event_type_candidates: eventTypeCandidates,
+      signals: signals.slice(0, 10),
+      city: 'Providence'
+    }
+  }
+
+  const runRAGFromVLM = async (vlmPayload) => {
+    if (!vlmPayload) return
+    setRagLoading(true)
+    setRagError('')
+    setRagResult(null)
+    try {
+      const ragInput = mapVlmToRagInput(vlmPayload)
+      const res = await fetch(`${import.meta.env.VITE_DEPLOYMENT_API_URL ?? 'http://localhost:8000'}/rag/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(ragInput)
+      })
+      if (!res.ok) throw new Error('Request failed')
+      const data = await res.json()
+      setRagResult(data)
+    } catch (e) {
+      setRagError(e.message || 'RAG failed')
+    } finally {
+      setRagLoading(false)
+    }
+  }
+
+  const runVLM = async (stream, label) => {
+    if (!stream) return
+    const safeLabel = label || stream.label || `Camera ${stream.key}`
+    setVlmLoading(true)
+    setVlmError('')
+    setVlmResult(null)
+    setRagResult(null)
+    setRagError('')
+    try {
+      const data = await fetchLocationVlm({
+        cameraId: stream.key,
+        label: safeLabel,
+        streamUrl: stream.url
+      })
+      setVlmResult(data)
+      await runRAGFromVLM(data)
+    } catch (e) {
+      setVlmError(e.message || 'VLM failed')
+    } finally {
+      setVlmLoading(false)
+    }
+  }
+
   const toggleMinimized = (section) => {
     setMinimizedSections(prev => ({
       ...prev,
@@ -342,53 +414,9 @@ export default function DashboardPage() {
     }))
   }
 
-  const handleLocationClick = async (stream, label) => {
+  const handleCameraSelect = async (stream, label) => {
     setActiveLocation({ key: stream.key, label, url: stream.url })
-    setVlmLoading(true)
-    setVlmError('')
-    setVlmResult(null)
-    setVlmCountdown(60)
-    
-    // Clear existing interval
-    if (vlmRefreshInterval) {
-      clearInterval(vlmRefreshInterval)
-      setVlmRefreshInterval(null)
-    }
-    
-    try {
-      const data = await fetchLocationVlm({
-        cameraId: stream.key,
-        label,
-        streamUrl: stream.url
-      })
-      setVlmResult(data)
-      
-      // Set up auto-refresh every minute with countdown
-      const interval = setInterval(() => {
-        setVlmCountdown((prev) => {
-          if (prev <= 1) {
-            // Trigger refresh
-            fetchLocationVlm({
-              cameraId: stream.key,
-              label,
-              streamUrl: stream.url
-            }).then(refreshedData => {
-              setVlmResult(refreshedData)
-            }).catch(err => {
-              console.error('Auto-refresh failed:', err)
-            })
-            return 60 // Reset countdown
-          }
-          return prev - 1
-        })
-      }, 1000) // Every second
-      
-      setVlmRefreshInterval(interval)
-    } catch (err) {
-      setVlmError(err?.message ?? 'Failed to fetch VLM analysis')
-    } finally {
-      setVlmLoading(false)
-    }
+    await runVLM(stream, label)
   }
 
   // Create map ONCE (dark tiles). Keep container mounted; don't destroy on hide.
@@ -460,7 +488,7 @@ export default function DashboardPage() {
 
         marker.on('click', () => {
           handleOpenStream(stream)
-          handleLocationClick(stream, label)
+          handleCameraSelect(stream, label)
         })
 
         marker.addTo(layer)
@@ -621,6 +649,7 @@ export default function DashboardPage() {
               title={expandedLabel}
               onLoad={() => setExpandedLoading(false)}
             />
+            {null}
           </div>
         </div>
       )}
@@ -868,29 +897,25 @@ export default function DashboardPage() {
                     </button>
                   </div>
                 </div>
-                
                 {!minimizedSections.vlm && (
                   <>
                     {vlmLoading && (
                       <div className="mt-2 flex items-center gap-2 text-slate-300">
                         <div className="sentinel-spinner" style={{ '--spinner-size': '16px' }} />
-                        <span>Requesting live analysis…</span>
+                        <span>Requesting VLM analysis…</span>
                       </div>
                     )}
                     {vlmError && !vlmLoading && <div className="mt-2 text-rose-300">{vlmError}</div>}
                     {vlmResult && !vlmLoading && (
                       <div className="mt-2 space-y-3 text-slate-200">
-                        {/* Use markdown renderer for the main summary */}
                         {vlmResult.summary && (
                           <div className="space-y-2">
-                            <MarkdownRenderer 
-                              content={vlmResult.summary} 
+                            <MarkdownRenderer
+                              content={vlmResult.summary}
                               className="text-sm leading-relaxed"
                             />
                           </div>
                         )}
-                        
-                        {/* Show parsed structured data - only show what's not already in summary */}
                         {vlmResult.detailed_analysis && (
                           <div className="space-y-2 border-t border-white/10 pt-2">
                             {vlmResult.detailed_analysis.event && (
@@ -912,7 +937,6 @@ export default function DashboardPage() {
                                 </span>
                               </div>
                             )}
-                            
                             {vlmResult.detailed_analysis.actors && vlmResult.detailed_analysis.actors.length > 0 && (
                               <div className="text-xs text-slate-400">
                                 <span className="font-medium text-slate-300">Actors:</span> {vlmResult.detailed_analysis.actors.length} detected
@@ -927,15 +951,45 @@ export default function DashboardPage() {
                             )}
                           </div>
                         )}
-                        
-                        {/* Countdown timer instead of static timestamp */}
-                        <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-500 border-t border-white/10 pt-2">
-                          <span>Last updated {new Date(vlmResult.updated_at).toLocaleTimeString()}</span>
-                          <span>Querying in {vlmCountdown}s</span>
-                        </div>
                       </div>
                     )}
                   </>
+                )}
+              </div>
+            )}
+
+            {activeLocation && (ragLoading || ragResult || ragError) && (
+              <div className="rounded-md border border-white/10 bg-slate-900/60 p-4 text-xs text-slate-200">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                  <span>RAG Decision</span>
+                  <button
+                    className="flex h-5 w-5 items-center justify-center rounded-sm border border-white/10 bg-slate-900/70 text-[10px] font-semibold text-slate-200 transition hover:bg-slate-800"
+                    onClick={() => toggleMinimized('rag')}
+                    type="button"
+                    aria-label="Toggle RAG decision"
+                  >
+                    {minimizedSections.rag ? '+' : '-'}
+                  </button>
+                </div>
+                {!minimizedSections.rag && (
+                  <div className="mt-2 max-h-48 overflow-y-auto">
+                    {ragLoading && (
+                      <div className="flex items-center gap-2 text-slate-300">
+                        <div className="sentinel-spinner" style={{ '--spinner-size': '16px' }} />
+                        <span>Running policy checks…</span>
+                      </div>
+                    )}
+                    {ragError && !ragLoading && <div className="text-rose-300">{ragError}</div>}
+                    {ragResult && !ragLoading && (
+                      <>
+                        <div className="font-semibold mb-1">Decision</div>
+                        <div className="mb-2 text-slate-300">{ragResult.explanation || 'No decision'}</div>
+                        {ragResult.action && (
+                          <div className="text-slate-400">Action: {ragResult.action}</div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 )}
               </div>
             )}
@@ -1016,13 +1070,13 @@ export default function DashboardPage() {
                       } else {
                         setExpandedKey(streamKey)
                         setExpandedVisible(false)
-                        handleLocationClick(stream, label)
+                        handleCameraSelect(stream, label)
                       }
                     }}
                     type="button"
                   />
                   <button
-                    className="absolute left-2 top-2 z-20 hidden h-8 w-8 items-center justify-center border border-white/20 bg-slate-900/80 text-xs font-semibold text-slate-100 opacity-0 transition group-hover:flex group-hover:opacity-100"
+                    className="absolute left-2 top-2 z-20 hidden px-2 py-1 items-center justify-center border border-white/20 bg-slate-900/80 text-[10px] font-semibold text-slate-100 opacity-0 transition group-hover:flex group-hover:opacity-100"
                     onClick={() => {
                       setHiddenKeys((prev) => {
                         const next = new Set(prev)
@@ -1035,14 +1089,6 @@ export default function DashboardPage() {
                   >
                     {isHidden ? '+' : '-'}
                   </button>
-                  <VLMRAGTile stream={stream} enabled={vlmRAGEnabled.has(streamKey)} onToggle={(enabled) => {
-                    setVlmRAGEnabled((prev) => {
-                      const next = new Set(prev)
-                      if (enabled) next.add(streamKey)
-                      else next.delete(streamKey)
-                      return next
-                    })
-                  }} />
 
                   {/* Labels: NO border, NO hover behavior */}
                   {showLabels && (

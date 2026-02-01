@@ -8,10 +8,11 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urljoin
 
+import cv2
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from app.vlm import EventAnalyzer, render_human_narrative
+from app.vlm import EventAnalyzer, render_human_narrative, EventContext
 from app.rag import (
     DecisionEngine,
     DecisionInput,
@@ -139,6 +140,67 @@ def extract_id_to_m3u8_from_text(text: str) -> dict[str, str]:
 def extract_inline_scripts(page_html: str) -> list[str]:
     cleaned = html.unescape(page_html)
     return re.findall(r"<script[^>]*>(.*?)</script>", cleaned, flags=re.I | re.S)
+
+
+async def sample_frames_from_hls(stream_url: str, times: list[float]) -> list[tuple[float, bytes]]:
+    """
+    Sample frames from an HLS stream at given timestamps.
+    Returns list of (timestamp, jpeg_bytes).
+    """
+    import tempfile
+    import subprocess
+
+    # Download a short segment of the HLS stream to a temp file
+    temp_dir = tempfile.mkdtemp()
+    segment_path = os.path.join(temp_dir, "segment.ts")
+    try:
+        # Use ffmpeg to download first 15 seconds and extract frames
+        cmd = [
+            "ffmpeg",
+            "-i", stream_url,
+            "-t", "15",
+            "-avoid_negative_ts", "make_zero",
+            "-c", "copy",
+            "-f", "mpegts",
+            "-y",
+            segment_path
+        ]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            print(f"[ffmpeg] error: {stderr.decode()}")
+            return []
+
+        frames = []
+        for t in times:
+            # Extract a frame at the requested time
+            out_path = os.path.join(temp_dir, f"frame_{t}.jpg")
+            cmd = [
+                "ffmpeg",
+                "-ss", str(t),
+                "-i", segment_path,
+                "-frames:v", "1",
+                "-q:v", "2",
+                "-y",
+                out_path
+            ]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            await proc.communicate()
+            if proc.returncode == 0 and os.path.exists(out_path):
+                with open(out_path, "rb") as f:
+                    frames.append((t, f.read()))
+        return frames
+    finally:
+        # Cleanup temp files
+        for f in os.listdir(temp_dir):
+            try:
+                os.remove(os.path.join(temp_dir, f))
+            except:
+                pass
+        try:
+            os.rmdir(temp_dir)
+        except:
+            pass
 
 
 async def fetch_text(client: httpx.AsyncClient, url: str) -> str:
@@ -488,6 +550,7 @@ async def vlm_and_rag(body: dict):
     """
     Combined VLM + RAG endpoint.
     Accepts: { "camera_id": "...", "label": "...", "stream_url": "..." }
+    Backend samples 3 frames from the HLS URL internally.
     Returns: { vlm: {...}, rag: {...} }
     """
     camera_id = body.get("camera_id")
@@ -496,26 +559,24 @@ async def vlm_and_rag(body: dict):
     if not (camera_id and label and stream_url):
         raise HTTPException(status_code=400, detail="camera_id, label, and stream_url required")
 
-    # TODO: Sample first/middle/last frames over 10s from the HLS stream.
-    # For now, we’ll accept keyframes from the client to keep this simple.
-    keyframes_raw = body.get("keyframes") or []
-    keyframes: list[tuple[float, bytes]] = []
-    for kf in keyframes_raw[:3]:
-        ts = float(kf.get("ts", 0))
-        b64 = kf.get("base64") or kf.get("data") or ""
-        if b64:
-            keyframes.append((ts, base64.standard_b64decode(b64)))
-
+    # Sample 3 frames from the HLS stream on the backend
+    keyframes = await sample_frames_from_hls(stream_url, times=[0, 5, 10])
     if not keyframes:
-        raise HTTPException(status_code=400, detail="No keyframes provided")
+        raise HTTPException(status_code=500, detail="Failed to sample frames from stream")
 
     # VLM step
-    context = {"camera_id": camera_id, "label": label}
+    ctx = EventContext(
+        event_id=f"evt_{camera_id}_{int(time.time())}",
+        camera_id=camera_id,
+        fps=30.0,
+        window_seconds=0,
+        cv_notes="Auto-sampled 3 frames (0s, 5s, 10s) from HLS stream."
+    )
     analyzer = get_vlm_analyzer()
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
     try:
-        vlm_result = analyzer.analyze_from_dict(context, keyframes=keyframes)
+        vlm_result = analyzer.analyze(ctx, keyframes=keyframes)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

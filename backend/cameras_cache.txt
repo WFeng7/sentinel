@@ -10,15 +10,15 @@
     "id": "cam37",
     "label": "Atwells Ave",
     "stream": "https://cdn3.wowza.com/1/aUdHZFJSUy91dkp4/UzFvOTFW/hls/live/playlist.m3u8",
-    "lat": 41.8253226,
-    "lng": -71.4540871
+    "lat": 41.8231,
+    "lng": -71.4188
   },
   {
     "id": "cam38",
     "label": "Dean Street",
     "stream": "https://cdn3.wowza.com/1/Y2ZmK1ErdG1zUXZF/TWJFdzNI/hls/live/playlist.m3u8",
-    "lat": 41.8229178,
-    "lng": -71.4237803
+    "lat": 41.8231,
+    "lng": -71.4128
   },
   {
     "id": "cam43",
@@ -38,8 +38,8 @@
     "id": "cam33",
     "label": "Hartford Ave",
     "stream": "https://cdn3.wowza.com/1/WE5TRUNFT2lDUWg5/aFE3eU1K/hls/live/playlist.m3u8",
-    "lat": 41.8198501,
-    "lng": -71.4700121
+    "lat": 41.8231,
+    "lng": -71.4188
   },
   {
     "id": "cam24",
@@ -108,8 +108,8 @@
     "id": "cam17",
     "label": "I-95 N @ Broadway",
     "stream": "https://cdn3.wowza.com/1/SW4yU0tJN2hmVUNZ/THh0V2h6/hls/live/playlist.m3u8",
-    "lat": 41.826518,
-    "lng": -71.3646546
+    "lat": 41.8231,
+    "lng": -71.4134
   },
   {
     "id": "cam9",
@@ -339,7 +339,7 @@
     "id": "cam35",
     "label": "Westminster Street",
     "stream": "https://cdn3.wowza.com/1/NlpMMjR5bXFWNk40/NFF6ME16/hls/live/playlist.m3u8",
-    "lat": 41.8190208,
-    "lng": -71.4183631
+    "lat": 41.8231,
+    "lng": -71.4128
   }
 ]
