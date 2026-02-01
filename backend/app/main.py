@@ -23,6 +23,7 @@ from app.rag import (
     DecisionInput,
     create_rag_pipeline,
 )
+from app.rag.decision_engine import get_rag_stats
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -99,6 +100,60 @@ def _resolve_camera_label(camera_id: str | None) -> str:
         return ""
     label_map = _load_camera_label_map()
     return label_map.get(camera_id, "")
+
+
+def _count_words(text: str) -> int:
+    return len(text.split()) if text else 0
+
+
+def _count_words_in_pdf(path: Path) -> int:
+    try:
+        from pypdf import PdfReader
+    except Exception:
+        return 0
+    try:
+        reader = PdfReader(str(path))
+    except Exception:
+        return 0
+    total = 0
+    for page in reader.pages:
+        try:
+            total += _count_words(page.extract_text() or "")
+        except Exception:
+            continue
+    return total
+
+
+def _count_words_in_data_folder(data_dir: Path) -> dict:
+    total_words = 0
+    file_count = 0
+    pdf_count = 0
+    for path in data_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        ext = path.suffix.lower()
+        if ext == ".pdf":
+            total_words += _count_words_in_pdf(path)
+            file_count += 1
+            pdf_count += 1
+        elif ext in {".txt", ".md"}:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+            total_words += _count_words(text)
+            file_count += 1
+    return {"folder": str(data_dir), "files_counted": file_count, "pdf_count": pdf_count, "total_words": total_words}
+
+
+@app.get("/rag/stats")
+async def rag_stats():
+    data_dir = Path(os.environ.get("RAG_DATA_DIR") or Path(__file__).parent / "rag" / "data")
+    if not data_dir.exists():
+        raise HTTPException(status_code=404, detail="RAG data folder not found")
+    stats = get_rag_stats()
+    stats["data_folder"] = _count_words_in_data_folder(data_dir)
+    return stats
 
 
 @app.get("/incidents")
