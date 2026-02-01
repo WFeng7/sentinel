@@ -14,8 +14,6 @@ class RAGBase(BaseModel):
 class DecisionInput(RAGBase):
     """Input to the decision engine."""
 
-    model_config = ConfigDict(extra="forbid")
-
     event_type_candidates: list[str] = Field(default_factory=list)
     signals: list[str] = Field(default_factory=list)
     city: str = "Providence"
@@ -23,8 +21,6 @@ class DecisionInput(RAGBase):
 
 class SupportingExcerpt(RAGBase):
     """A policy excerpt supporting the decision."""
-
-    model_config = ConfigDict(extra="forbid")
 
     text: str
     document_id: str
@@ -34,8 +30,6 @@ class SupportingExcerpt(RAGBase):
 
 class DecisionOutput(RAGBase):
     """Output from the decision engine."""
-
-    model_config = ConfigDict(extra="forbid")
 
     decision: dict[str, Any] = Field(default_factory=dict)
     explanation: str = ""
