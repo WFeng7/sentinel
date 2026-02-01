@@ -2,6 +2,7 @@
 
 import cv2
 import json
+import math
 import os
 import numpy as np
 from ultralytics import YOLO
@@ -10,7 +11,7 @@ from transformers import pipeline
 from PIL import Image
 
 class ObjectTracker: 
-    def __init__(self, model: str, video_source: str, conf_threshold: float = 0.01, iou_threshold: float = 0.9, imgsz: int = 1280, database_file: str = "speed_database.json", grid_size: int = 20, enable_crash_detection: bool = True, crash_check_interval: int = 30, crash_indicator_threshold: int = 2, output_video: str = None):
+    def __init__(self, model: str, video_source: str, conf_threshold: float = 0.01, iou_threshold: float = 0.9, imgsz: int = 1280, database_file: str = "speed_database.json", grid_size: int = 20, enable_crash_detection: bool = True, crash_check_interval: int = 30, crash_indicator_threshold: float = 0.75, output_video: str = None):
         """
         Initialize ObjectTracker.
         
@@ -38,8 +39,7 @@ class ObjectTracker:
         # Crash detection setup
         self.enable_crash_detection = enable_crash_detection
         self.crash_check_interval = crash_check_interval  # Check every N frames
-        self.crash_indicator_threshold = crash_indicator_threshold  # Number of indicators that must be true to declare a crash
-        self.crash_confidence_threshold = 0.5  # Minimum confidence for Hugging Face model
+        self.crash_indicator_threshold = crash_indicator_threshold  # Confidence to declare a crash
         
         # Initialize crash detection indicators
         self.crash_pipe = None
@@ -108,12 +108,17 @@ class ObjectTracker:
                 self.fps = 30.0
             else:
                 raise ValueError("FPS is 0 or invalid")
-        # For video files, use 0 delay (play as fast as possible) unless user wants real-time playback
-        # For live streams, use calculated delay to match FPS
+        
+        # Calculate delay to match video FPS for proper playback speed
+        # For video files, use minimal delay (1ms) to allow processing to control speed
+        # Processing time will naturally control playback speed
+        # For live streams, match FPS to maintain real-time playback
         if self.is_file:
-            self.delay = 1  # Minimal delay for video files (can be controlled with 'q' to quit)
+            self.delay = 1  # Minimal delay for video files - processing time controls playback speed
+            print(f"Video file detected: FPS={self.fps:.2f}, using minimal delay (1ms) for fast playback")
         else:
-            self.delay = int(1000 / self.fps)  # Match FPS for live streams
+            self.delay = max(1, int(1000 / self.fps))  # Match FPS for live streams
+            print(f"Live stream: FPS={self.fps:.2f}, delay={self.delay}ms")
 
         # window setup
         self.window_name = "Object Tracking"
@@ -275,14 +280,14 @@ class ObjectTracker:
         total_accelerations = sum(len(accels) for accels in self._acceleration_database.values())
         total_jerk_cells = len(self._jerk_database)
         total_jerks = sum(len(jerks) for jerks in self._jerk_database.values())
-        
+        """
         print(f"\nDatabase summary (in-memory only, not saved to file):")
         print(f"  Speed grid cells: {total_speed_cells} (max 50 per cell)")
         print(f"  Speed measurements: {total_speeds}")
         print(f"  Acceleration grid cells: {total_accel_cells} (max 50 per cell)")
         print(f"  Acceleration measurements: {total_accelerations}")
         print(f"  Jerk grid cells: {total_jerk_cells} (max 50 per cell)")
-        print(f"  Jerk measurements: {total_jerks}")
+        print(f"  Jerk measurements: {total_jerks}")"""
 
     def _speed_to_color_bgr(self, speed_px_per_sec: float, grid_cell: tuple[int, int]) -> tuple[int, int, int]:
         """Map speed (px/s) to BGR based on z-score from Gaussian MLE of grid cell's historical data.
@@ -517,9 +522,9 @@ class ObjectTracker:
                 
                 # Check if it's classified as an accident/crash
                 is_crash = 'accident' in label.lower() or 'crash' in label.lower()
-                is_positive = is_crash and confidence >= self.crash_confidence_threshold
+                is_positive = is_crash and confidence >= 0.5
                 
-                return is_positive, {
+                return confidence, {
                     'label': label,
                     'confidence': confidence,
                     'threshold_met': is_positive
@@ -541,7 +546,7 @@ class ObjectTracker:
             (is_positive, details): Boolean indicating crash detected, and details dict
         """
         min_datapoints = 5  # Minimum datapoints per grid cell for reliable Gaussian estimate
-        min_cells = 2  # Need at least 2 grid cells with sudden stops
+        min_cells = 10 # Need at least 2 grid cells with sudden stops
         z_score_threshold = -2.0  # Z-score threshold (negative = deceleration below mean)
         
         cells_with_sudden_stop = 0
@@ -601,6 +606,42 @@ class ObjectTracker:
             'min_datapoints_required': min_datapoints
         }
     
+    def _indicator_person_detected(self, result) -> tuple[bool, dict]:
+        """Indicator: Detect if a person (class 0) is present in the frame.
+        
+        Args:
+            result: YOLO detection result
+            
+        Returns:
+            (is_positive, details): Boolean indicating person detected, and details dict
+        """
+        if result is None or result.boxes is None:
+            return False, {'enabled': False}
+        
+        # Check if any detected objects are class 0 (person)
+        if result.boxes.cls is not None:
+            classes = result.boxes.cls.cpu().numpy()
+            person_indices = np.where(classes == 0)[0]
+            
+            if len(person_indices) > 0:
+                # Get confidence scores for detected persons
+                if result.boxes.conf is not None:
+                    confidences = result.boxes.conf.cpu().numpy()
+                    person_confidences = confidences[person_indices]
+                    max_confidence = float(np.max(person_confidences))
+                    avg_confidence = float(np.mean(person_confidences))
+                else:
+                    max_confidence = 1.0
+                    avg_confidence = 1.0
+                
+                return True, {
+                    'person_count': len(person_indices),
+                    'max_confidence': max_confidence,
+                    'avg_confidence': avg_confidence
+                }
+        
+        return False, {'person_count': 0}
+    
     def _indicator_high_jerk(self, frame_idx: int) -> tuple[bool, dict]:
         """Indicator: Detect high jerk values using MLE Gaussian on jerk history.
         Fires when absolute jerk has high positive z-score (significantly above mean).
@@ -612,7 +653,7 @@ class ObjectTracker:
             (is_positive, details): Boolean indicating crash detected, and details dict
         """
         min_datapoints = 5  # Minimum datapoints per grid cell for reliable Gaussian estimate
-        min_objects = 1  # Need at least 1 object with high jerk
+        min_objects = 10  # Need at least 1 object with high jerk
         z_score_threshold = 2.0  # Z-score threshold (positive = absolute jerk above mean)
         
         objects_with_high_jerk = 0
@@ -673,21 +714,30 @@ class ObjectTracker:
             'min_datapoints_required': min_datapoints
         }
     
-    def crash_detected(self, frame: np.ndarray, frame_idx: int) -> tuple[bool, dict]:
+    def crash_detected(self, frame: np.ndarray, frame_idx: int, result=None) -> tuple[bool, dict]:
         """Main crash detection function that checks multiple indicators.
         
         Args:
             frame: BGR frame from OpenCV
             frame_idx: Current frame index
+            result: Optional YOLO detection result for person detection
             
         Returns:
             (is_crash, indicators): Boolean indicating crash detected, and dict of all indicator results
         """
         if not self.enable_crash_detection:
             return False, {}
-        
+    
+        weights = {}
+        weights['huggingface_model'] = 5
+        weights['sudden_stop'] = 2
+        weights['high_jerk'] = 2
+        weights['person_detected'] = 5
+        # Normalize using softmax (exp and normalize)
+        total = sum(math.exp(v) for v in weights.values())
+        weights = {k: math.exp(v) / total for k, v in weights.items()}
         indicators = {}
-        positive_count = 0
+        confidence_score = 0.0
         
         # Check each indicator
         # 1. Hugging Face model indicator
@@ -697,7 +747,7 @@ class ObjectTracker:
             'details': hf_details
         }
         if hf_result:
-            positive_count += 1
+            confidence_score += weights['huggingface_model']
         
         # 2. Sudden stop indicator
         sudden_stop_result, sudden_stop_details = self._indicator_sudden_stop(frame_idx)
@@ -706,7 +756,7 @@ class ObjectTracker:
             'details': sudden_stop_details
         }
         if sudden_stop_result:
-            positive_count += 1
+            confidence_score += weights['sudden_stop']
         
         # 3. High jerk indicator
         high_jerk_result, high_jerk_details = self._indicator_high_jerk(frame_idx)
@@ -715,10 +765,22 @@ class ObjectTracker:
             'details': high_jerk_details
         }
         if high_jerk_result:
-            positive_count += 1
+            confidence_score += weights['high_jerk']
+        
+        # 4. Person detected indicator
+        person_result, person_details = self._indicator_person_detected(result)
+        indicators['person_detected'] = {
+            'positive': person_result,
+            'details': person_details
+        }
+        if person_result:
+            confidence_score += weights['person_detected']
+        
+        # Debug output (uncomment to debug)
+        # print(f"Debug - person_result: {person_result}, confidence_score: {confidence_score:.4f}, threshold: {self.crash_indicator_threshold:.4f}, weights: {weights}")
         
         # Determine if crash is detected based on threshold
-        is_crash = positive_count >= self.crash_indicator_threshold
+        is_crash = confidence_score >= self.crash_indicator_threshold
         
         # Store results for debugging
         self.last_crash_indicators = indicators
@@ -751,14 +813,17 @@ class ObjectTracker:
                 max_det=500,
                 tracker="botsort.yaml",
                 device="mps",
+                verbose=False,  # Suppress YOLO output
             )
             self.ann = Annotator(frame, line_width=2, font_size=1)
 
             n_det = 0
             mean_conf = 0.0
             min_box_area = 0.0
+            current_result = None  # Store result for crash detection
             if results and len(results) > 0:
                 result = results[0]
+                current_result = result
                 if result.boxes is not None and result.boxes.id is not None:
                     boxes = result.boxes.xyxy.cpu().numpy()
                     ids = result.boxes.id.cpu()
@@ -819,7 +884,7 @@ class ObjectTracker:
             # Crash detection (check periodically to reduce computation)
             crash_detected = False
             if self.enable_crash_detection and frame_idx % self.crash_check_interval == 0:
-                crash_detected, indicators = self.crash_detected(frame, frame_idx)
+                crash_detected, indicators = self.crash_detected(frame, frame_idx, current_result)
                 if crash_detected:
                     self.last_crash_result = {
                         'is_crash': True,
@@ -855,6 +920,11 @@ class ObjectTracker:
                             print(f"     - Max jerk: {details.get('max_jerk', 0):.1f} px/s³")
                             print(f"     - Grid cells checked: {details.get('cells_checked', 0)}")
                             print(f"     - Cells with insufficient data: {details.get('cells_insufficient_data', 0)} (min {details.get('min_datapoints_required', 0)} required)")
+                        elif name == 'person_detected' and 'person_count' in details:
+                            print(f"     - Persons detected: {details['person_count']}")
+                            if details.get('person_count', 0) > 0:
+                                print(f"     - Max confidence: {details.get('max_confidence', 0):.3f}")
+                                print(f"     - Avg confidence: {details.get('avg_confidence', 0):.3f}")
                     
                     if negative_indicators:
                         print(f"\n❌ NEGATIVE INDICATORS ({len(negative_indicators)}):")
@@ -889,7 +959,7 @@ class ObjectTracker:
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             mean_luminance = float(np.mean(gray))
-            print(f"frame {frame_idx}: n_det={n_det} mean_conf={mean_conf:.3f} min_box_area={min_box_area:.0f} mean_luminance={mean_luminance:.1f}")
+            # print(f"frame {frame_idx}: n_det={n_det} mean_conf={mean_conf:.3f} min_box_area={min_box_area:.0f} mean_luminance={mean_luminance:.1f}")
             frame_idx += 1
 
             # Draw grid overlay if enabled
@@ -900,8 +970,7 @@ class ObjectTracker:
                 self.video_writer.write(frame)
 
             cv2.imshow("Object Tracking", frame)
-            # key = cv2.waitKey(self.delay) & 0xFF
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(self.delay) & 0xFF
             if key == ord("q"):
                 break
             elif key == ord("c"):
