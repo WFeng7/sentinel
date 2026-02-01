@@ -6,13 +6,12 @@ Works with any VectorStore implementation (InMemory, OpenSearch).
 from typing import Any
 
 from .schemas import RetrievedExcerpt
-from .opensearch_store import OpenSearchVectorStore
 
 
 class PolicyRetriever:
     """Retrieves relevant policy excerpts by semantic similarity and metadata filters."""
 
-    def __init__(self, vector_store: OpenSearchVectorStore):
+    def __init__(self, vector_store):
         self._store = vector_store
 
     def retrieve(

@@ -38,9 +38,6 @@ class DecisionEngine:
         Produce a decision from event_type_candidates, signals, and city.
         Returns structured JSON decision, human-readable explanation, and policy excerpts.
         """
-        if not self._api_key:
-            raise ValueError("OPENAI_API_KEY required for RAG decision engine")
-
         query_parts = inp.event_type_candidates + inp.signals
         query = " ".join(query_parts) if query_parts else "traffic incident policy"
 
@@ -69,6 +66,22 @@ class DecisionEngine:
             for e in excerpts
         ]
 
+        mode = os.environ.get("RAG_MODE", "llm").lower()
+        if mode != "llm":
+            explanation = f"Retrieved {len(supporting)} policy excerpts for context."
+            return DecisionOutput(
+                decision={
+                    "event_type_candidates": inp.event_type_candidates,
+                    "signals": inp.signals,
+                    "city": inp.city,
+                },
+                explanation=explanation,
+                supporting_excerpts=supporting,
+            )
+
+        if not self._api_key:
+            raise ValueError("OPENAI_API_KEY required for RAG decision engine")
+
         return self._decide_with_llm(inp, excerpts, supporting)
 
     def _decide_with_llm(
@@ -79,9 +92,17 @@ class DecisionEngine:
     ) -> DecisionOutput:
         """Use LLM to derive decision from event context and policy excerpts."""
         from openai import OpenAI
+        max_excerpts = int(os.environ.get("RAG_MAX_EXCERPTS", str(self._top_k)))
+        max_chars = int(os.environ.get("RAG_MAX_EXCERPT_CHARS", "1200"))
 
+        def _truncate(text: str) -> str:
+            if len(text) <= max_chars:
+                return text
+            return f"{text[:max_chars]}…"
+
+        trimmed = excerpts[:max_excerpts]
         policy_text = "\n\n---\n\n".join(
-            f"[{e.document_id}] {e.text}" for e in excerpts
+            f"[{e.document_id}] {_truncate(e.text)}" for e in trimmed
         ) or "(No policy excerpts retrieved)"
 
         prompt = build_decision_prompt(

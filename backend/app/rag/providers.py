@@ -7,6 +7,7 @@
 """
 
 from abc import ABC, abstractmethod
+import os
 from pathlib import Path
 
 from .schemas import PolicyDocument
@@ -95,6 +96,36 @@ class MockPolicyProvider(PolicyProvider):
     """Minimal hardcoded docs for dev/testing."""
 
     def fetch_documents(self) -> list[PolicyDocument]:
+        base_dir = Path(__file__).resolve().parents[2] / "data"
+        local_path = Path(os.environ.get("RAG_LOCAL_PATH", str(base_dir)))
+        docs: list[PolicyDocument] = []
+
+        if local_path.exists() and local_path.is_dir():
+            for path in sorted(local_path.iterdir()):
+                if not path.is_file():
+                    continue
+                ext = path.suffix.lower()
+                if ext not in (".pdf", ".txt", ".md"):
+                    continue
+                try:
+                    body = path.read_bytes()
+                except Exception:
+                    continue
+                text = self._parse_content(body, ext, path)
+                if not text:
+                    continue
+                doc_id = path.name.replace(" ", "_")[:80]
+                docs.append(
+                    PolicyDocument(
+                        id=doc_id,
+                        text=text,
+                        metadata={"source": "local", "path": str(path)},
+                    )
+                )
+
+        if docs:
+            return docs
+
         return [
             PolicyDocument(
                 id="mock_001",
@@ -107,3 +138,18 @@ class MockPolicyProvider(PolicyProvider):
                 metadata={"city": "Providence", "doc_type": "lane_blockage"},
             ),
         ]
+
+    def _parse_content(self, body: bytes, ext: str, path: Path) -> str:
+        if ext == ".txt" or ext == ".md":
+            return body.decode("utf-8", errors="replace")
+        if ext == ".pdf":
+            try:
+                from pypdf import PdfReader
+                from io import BytesIO
+
+                reader = PdfReader(BytesIO(body))
+                return "\n\n".join(p.extract_text() or "" for p in reader.pages)
+            except Exception as exc:
+                print(f"[rag] Failed to parse PDF: {path.name} ({exc})")
+                return ""
+        return ""

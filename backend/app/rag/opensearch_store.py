@@ -111,6 +111,9 @@ class OpenSearchVectorStore:
         if client.indices.exists(index=self._index_name):
             return
 
+        hnsw_m = int(os.environ.get("RAG_HNSW_M", "16"))
+        hnsw_ef = int(os.environ.get("RAG_HNSW_EF_CONSTRUCTION", "128"))
+
         # IMPORTANT: your previous mapping had metadata enabled=False, so filters could never work.
         # This mapping indexes metadata.city and metadata.doc_type as keywords, but keeps the rest non-indexed.
         body = {
@@ -134,6 +137,12 @@ class OpenSearchVectorStore:
                     self.VECTOR_FIELD: {
                         "type": "knn_vector",
                         "dimension": DEFAULT_EMBEDDING_DIM,
+                        "method": {
+                            "name": "hnsw",
+                            "engine": "nmslib",
+                            "space_type": "cosinesimil",
+                            "parameters": {"m": hnsw_m, "ef_construction": hnsw_ef},
+                        },
                     },
                 },
             },
@@ -193,6 +202,7 @@ class OpenSearchVectorStore:
                 filter_clauses.append({"term": {f"{self.METADATA_FIELD}.doc_type": filters["doc_type"]}})
 
         # OpenSearch supports knn inside a bool query in common modern versions.
+        num_candidates = int(os.environ.get("RAG_NUM_CANDIDATES", str(max(top_k * 4, 20))))
         body: dict[str, Any] = {
             "size": top_k,
             "query": {
@@ -203,6 +213,7 @@ class OpenSearchVectorStore:
                                 self.VECTOR_FIELD: {
                                     "vector": query_vector,
                                     "k": top_k,
+                                    "num_candidates": num_candidates,
                                 }
                             }
                         }

@@ -145,6 +145,11 @@
         })
       }
 
+      const isProbablyFile = (src) => {
+        const lower = src.toLowerCase()
+        return lower.endsWith('.mp4') || lower.endsWith('.mov') || lower.endsWith('.webm') || lower.endsWith('.mkv')
+      }
+
       const setSrc = (src) => {
         if (!src) {
           stopPlayback()
@@ -154,6 +159,11 @@
         if (src === currentSrc) return
 
         stopPlayback()
+
+        if (isProbablyFile(src)) {
+          startNative(src)
+          return
+        }
 
         if (video.canPlayType('application/vnd.apple.mpegurl')) {
           startNative(src)

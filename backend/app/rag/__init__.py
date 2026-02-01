@@ -49,12 +49,16 @@ def create_rag_pipeline(
         )
     else:
         provider = MockPolicyProvider()
-    from .opensearch_store import OpenSearchVectorStore
-    store = OpenSearchVectorStore(
-        endpoint=os.environ.get("OPENSEARCH_ENDPOINT", "https://placeholder.opensearch.region.es.amazonaws.com"),
-        index_name=os.environ.get("OPENSEARCH_INDEX", "policy-docs"),
-        region=os.environ.get("AWS_REGION", "us-east-1"),
-    )
+    if store_type == "opensearch":
+        from .opensearch_store import OpenSearchVectorStore
+        store = OpenSearchVectorStore(
+            endpoint=os.environ.get("OPENSEARCH_ENDPOINT", "http://localhost:9200"),
+            index_name=os.environ.get("OPENSEARCH_INDEX", "policy-docs"),
+            region=os.environ.get("AWS_REGION", "us-east-1"),
+        )
+    else:
+        from .memory_store import InMemoryVectorStore
+        store = InMemoryVectorStore()
 
     pipeline = DocumentIngestionPipeline(provider=provider, vector_store=store)
     pipeline.run()

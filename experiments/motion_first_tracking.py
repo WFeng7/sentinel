@@ -16,11 +16,36 @@ import cv2
 import math
 import os
 import time
+from datetime import datetime, timezone
+import json
+import urllib.request
 from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
+
+# Optional .env loader (best-effort)
+try:
+    from dotenv import load_dotenv
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    load_dotenv(os.path.join(_script_dir, ".env"))
+    load_dotenv()
+except Exception:
+    pass
+
+# VLM + RAG imports (lazy usage)
+try:
+    from vlm import EventAnalyzer, render_human_narrative
+except Exception:
+    EventAnalyzer = None
+    render_human_narrative = None
+
+try:
+    from rag import create_rag_pipeline, DecisionInput
+except Exception:
+    create_rag_pipeline = None
+    DecisionInput = None
 
 
 # -----------------------------------------------------------------------------
@@ -431,6 +456,276 @@ STOPPED_PERSIST_FRAMES = 8  # ~1.6s at 5 FPS
 DECEL_MIN_HITS = 5  # Only use decel/accel from tracks present 5+ frames
 SHOCKWAVE_MED_DROP_THRESH = 8.0  # px/s (median_speed_drop)
 SHOCKWAVE_DENSITY_INCREASE = 0.3  # fraction
+DEFAULT_WINDOW_FRAMES = 50
+DEFAULT_INCIDENT_RATE_LIMIT_S = 60.0
+DEFAULT_KEYFRAME_JPEG_QUALITY = 85
+
+
+# -----------------------------------------------------------------------------
+# Incident window + VLM/RAG
+# -----------------------------------------------------------------------------
+
+
+@dataclass
+class WindowFrame:
+    frame_idx: int
+    ts: float
+    frame: np.ndarray
+    incident: bool
+
+
+def _encode_jpeg(frame: np.ndarray, quality: int = DEFAULT_KEYFRAME_JPEG_QUALITY) -> bytes:
+    ok, enc = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    if not ok:
+        raise RuntimeError("Failed to encode keyframe JPEG.")
+    return enc.tobytes()
+
+
+class IncidentWindow:
+    def __init__(self, size: int):
+        self.size = size
+        self.frames: deque[WindowFrame] = deque()
+        self._incident_count = 0
+
+    def append(self, wf: WindowFrame) -> None:
+        if len(self.frames) >= self.size:
+            dropped = self.frames.popleft()
+            if dropped.incident:
+                self._incident_count -= 1
+        self.frames.append(wf)
+        if wf.incident:
+            self._incident_count += 1
+
+    @property
+    def has_incident(self) -> bool:
+        return self._incident_count > 0
+
+    def keyframes(self) -> list[tuple[float, bytes]]:
+        if not self.frames:
+            return []
+        n = len(self.frames)
+        indices = [0, n // 2, n - 1] if n >= 3 else list(range(n))
+        out: list[tuple[float, bytes]] = []
+        for idx in indices:
+            wf = self.frames[idx]
+            out.append((wf.ts, _encode_jpeg(wf.frame)))
+        return out
+
+
+def _vlm_to_rag_input(result) -> dict:
+    ev = getattr(result, "event", None)
+    rag_info = getattr(result, "rag", None)
+    evidence = getattr(result, "evidence", None) or []
+
+    event_type_candidates = []
+    if ev:
+        if getattr(ev, "type", None):
+            event_type_candidates.append(str(ev.type))
+        if getattr(ev, "category", None):
+            cat = ev.category
+            event_type_candidates.append(cat.value if hasattr(cat, "value") else str(cat))
+    tags = getattr(rag_info, "tags", []) if rag_info else []
+    event_type_candidates.extend(tags[:5])
+
+    signals = []
+    for e in evidence:
+        if isinstance(e, dict):
+            if e.get("claim"):
+                signals.append(str(e["claim"])[:200])
+            signals.extend(e.get("signals", [])[:3])
+        elif hasattr(e, "claim"):
+            signals.append(str(e.claim)[:200])
+    queries = getattr(rag_info, "queries", []) if rag_info else []
+    signals.extend(queries[:3])
+
+    return {
+        "event_type_candidates": event_type_candidates,
+        "signals": signals[:10],
+        "city": "Providence",
+    }
+
+
+def _upload_keyframes_s3(
+    keyframes: list[tuple[float, bytes]],
+    *,
+    bucket: str,
+    prefix: str,
+    event_id: str,
+) -> list[str]:
+    try:
+        import boto3
+    except Exception as exc:
+        raise RuntimeError(f"boto3 required for S3 upload: {exc}") from exc
+
+    client = boto3.client("s3")
+    uris: list[str] = []
+    for idx, (_, jpeg_bytes) in enumerate(keyframes):
+        key = f"{prefix.rstrip('/')}/{event_id}/kf_{idx}.jpg"
+        client.put_object(Bucket=bucket, Key=key, Body=jpeg_bytes, ContentType="image/jpeg")
+        uris.append(f"s3://{bucket}/{key}")
+    return uris
+
+
+class IncidentWindowProcessor:
+    def __init__(
+        self,
+        *,
+        camera_id: str,
+        fps: float,
+        window_size: int = DEFAULT_WINDOW_FRAMES,
+        rate_limit_s: float = DEFAULT_INCIDENT_RATE_LIMIT_S,
+        enable_vlm: bool = False,
+        enable_rag: bool = False,
+        s3_bucket: str | None = None,
+        s3_prefix: str = "sentinel/incidents",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        api_url: str | None = None,
+    ):
+        self.camera_id = camera_id
+        self.fps = fps
+        self.window = IncidentWindow(window_size)
+        self.rate_limit_s = rate_limit_s
+        self.enable_vlm = enable_vlm
+        self.enable_rag = enable_rag
+        self.s3_bucket = s3_bucket
+        self.s3_prefix = s3_prefix
+        self.api_key = api_key
+        self.base_url = base_url
+        self._last_incident_ts = 0.0
+        self._incident_active = False
+        self._rag_engine = None
+        self._vlm_analyzer = None
+        self.api_url = api_url or os.environ.get("SENTINEL_API_URL", "http://localhost:8000")
+        self._last_post_error_ts = 0.0
+
+    def _rate_limited(self) -> bool:
+        now = time.time()
+        return (now - self._last_incident_ts) < self.rate_limit_s
+
+    def _get_vlm(self):
+        if not self.enable_vlm:
+            return None
+        if EventAnalyzer is None:
+            raise RuntimeError("EventAnalyzer unavailable; missing VLM dependencies.")
+        if self._vlm_analyzer is None:
+            self._vlm_analyzer = EventAnalyzer(api_key=self.api_key, base_url=self.base_url)
+        return self._vlm_analyzer
+
+    def _get_rag_engine(self):
+        if not self.enable_rag:
+            return None
+        if create_rag_pipeline is None or DecisionInput is None:
+            raise RuntimeError("RAG pipeline unavailable; missing rag dependencies.")
+        if self._rag_engine is None:
+            _, _, self._rag_engine = create_rag_pipeline()
+        return self._rag_engine
+
+    def process(
+        self,
+        *,
+        frame: np.ndarray,
+        frame_idx: int,
+        cand: CandidateScore,
+        cv_notes: str,
+    ) -> None:
+        ts = frame_idx / max(self.fps, 1e-6)
+        self.window.append(
+            WindowFrame(frame_idx=frame_idx, ts=ts, frame=frame.copy(), incident=cand.send_to_vlm)
+        )
+
+        has_incident = self.window.has_incident
+        if self._incident_active and not has_incident:
+            self._incident_active = False
+
+        if self._incident_active or not has_incident:
+            return
+
+        if self._rate_limited():
+            self._incident_active = True
+            return
+
+        self._incident_active = True
+        self._last_incident_ts = time.time()
+
+        event_id = f"{self.camera_id}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+        keyframes = self.window.keyframes()
+
+        self._post_incident(event_id=event_id, cand=cand)
+
+        keyframe_uris: list[str] = []
+        if self.s3_bucket:
+            try:
+                keyframe_uris = _upload_keyframes_s3(
+                    keyframes, bucket=self.s3_bucket, prefix=self.s3_prefix, event_id=event_id
+                )
+            except Exception as exc:
+                print(f"[motion_first] {self.camera_id} | S3 upload failed for {event_id}: {exc}")
+
+        if not self.enable_vlm:
+            print(f"[motion_first] {self.camera_id} | Incident {event_id} detected (VLM disabled).")
+            return
+
+        ctx = {
+            "event_id": event_id,
+            "camera_id": self.camera_id,
+            "fps": float(self.fps),
+            "window_seconds": len(self.window.frames) / max(self.fps, 1e-6),
+            "cv_notes": cv_notes,
+        }
+        if keyframe_uris:
+            ctx["artifacts"] = {"keyframes": keyframe_uris}
+
+        try:
+            analyzer = self._get_vlm()
+            result = analyzer.analyze_from_dict(ctx, keyframes=keyframes)
+            print(f"\n--- VLM Structured Output ({self.camera_id}) ---")
+            print(result.model_dump(mode="json"))
+            if render_human_narrative:
+                print(f"\n--- Human Narrative ({self.camera_id}) ---")
+                print(render_human_narrative(result))
+        except Exception as exc:
+            print(f"[motion_first] {self.camera_id} | VLM analysis failed for {event_id}: {exc}")
+            return
+
+        if not self.enable_rag:
+            return
+
+        try:
+            engine = self._get_rag_engine()
+            inp = DecisionInput(**_vlm_to_rag_input(result))
+            rag_out = engine.decide(inp)
+            print(f"\n--- RAG Decision (local) ({self.camera_id}) ---")
+            print(rag_out.to_dict())
+        except Exception as exc:
+            print(f"[motion_first] {self.camera_id} | RAG decision failed for {event_id}: {exc}")
+
+    def _post_incident(self, *, event_id: str, cand: CandidateScore) -> None:
+        if not self.api_url:
+            return
+        payload = {
+            "event_id": event_id,
+            "camera_id": self.camera_id,
+            "score": float(cand.score),
+            "events": cand.event_types,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            url = f"{self.api_url.rstrip('/')}/incidents"
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                resp.read()
+        except Exception as exc:
+            now = time.time()
+            if now - self._last_post_error_ts > 30:
+                print(f"[motion_first] {self.camera_id} | Failed to post incident: {exc}")
+                self._last_post_error_ts = now
 
 
 # -----------------------------------------------------------------------------
@@ -457,6 +752,14 @@ class MotionFirstTracker:
         device: str = "mps",
         roi_y_frac: float = 0.25,
         target_fps: float = DEFAULT_TARGET_FPS,
+        camera_id: str = "cam00",
+        window_frames: int = DEFAULT_WINDOW_FRAMES,
+        incident_rate_limit_s: float = DEFAULT_INCIDENT_RATE_LIMIT_S,
+        enable_vlm: bool = False,
+        enable_rag: bool = False,
+        s3_bucket: str | None = None,
+        s3_prefix: str = "sentinel/incidents",
+        vlm_base_url: str | None = None,
     ):
         self.video_source = video_source
         self.incident_threshold = incident_threshold
@@ -464,6 +767,7 @@ class MotionFirstTracker:
         self.device = device
         self.roi_y_frac = roi_y_frac
         self.target_fps = target_fps
+        self.camera_id = camera_id
 
         # Video
         self.cap = cv2.VideoCapture(video_source)
@@ -503,6 +807,19 @@ class MotionFirstTracker:
         self._last_yolo_vehicle_count = 0
         self._person_run_count = 0  # Consecutive YOLO runs with person detected
         self._last_candidate: CandidateScore | None = None
+        self._incident_processor = IncidentWindowProcessor(
+            camera_id=camera_id,
+            fps=self.fps,
+            window_size=window_frames,
+            rate_limit_s=incident_rate_limit_s,
+            enable_vlm=enable_vlm,
+            enable_rag=enable_rag,
+            s3_bucket=s3_bucket,
+            s3_prefix=s3_prefix,
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            base_url=vlm_base_url,
+            api_url=os.environ.get("SENTINEL_API_URL", "http://localhost:8000"),
+        )
 
         # Output
         self.output_video_path = output_video
@@ -691,7 +1008,7 @@ class MotionFirstTracker:
         self.tracker.set_dt(dt)
         frame_interval = 1.0 / self.target_fps if self.target_fps > 0 else 0.2
         yolo_interval = max(1, int(self.target_fps / DEFAULT_YOLO_HZ)) if DEFAULT_YOLO_HZ > 0 else 1
-        print(f"[motion_first] input_fps={self.fps:.1f} target={self.target_fps} skip={skip} YOLO every {yolo_interval} processed")
+        print(f"[motion_first] {self.camera_id} | input_fps={self.fps:.1f} target={self.target_fps} skip={skip} YOLO every {yolo_interval} processed")
         frame_idx = 0
         processed_idx = 0
         last_process_time = time.perf_counter()
@@ -718,9 +1035,17 @@ class MotionFirstTracker:
                 frame, processed_idx, active_tracks=active_tracks
             )
             parts = [f"{k}:{v:.2f}" for k, v in cand.contributions.items()]
-            print(f"[motion_first] frame {frame_idx} | score={cand.score:.2f} | {', '.join(parts)}")
+            print(f"[motion_first] {self.camera_id} | frame {frame_idx} | score={cand.score:.2f} | {', '.join(parts)}")
             if cand.send_to_vlm:
-                print(f"  >> CANDIDATE send_to_vlm | events: {cand.event_types}")
+                print(f"  >> {self.camera_id} | CANDIDATE send_to_vlm | events: {cand.event_types}")
+
+            cv_notes = f"motion_first score={cand.score:.2f} events={list(cand.event_types.keys())}"
+            self._incident_processor.process(
+                frame=frame,
+                frame_idx=frame_idx,
+                cand=cand,
+                cv_notes=cv_notes,
+            )
 
             # 5. Draw
             if display or self.video_writer:
@@ -778,7 +1103,7 @@ class MotionFirstTracker:
             self.video_writer.release()
         if display:
             cv2.destroyAllWindows()
-        print(f"[motion_first] Done. Read {frame_idx} frames, processed {processed_idx}.")
+        print(f"[motion_first] {self.camera_id} | Done. Read {frame_idx} frames, processed {processed_idx}.")
 
 
 # -----------------------------------------------------------------------------
@@ -801,7 +1126,29 @@ def main():
                    help="Skip top fraction of frame for ROI (0.25 = road in lower 75%%)")
     p.add_argument("--target-fps", type=float, default=DEFAULT_TARGET_FPS,
                    help="Process at this FPS (default 5)")
+    p.add_argument("--camera-id", default=os.environ.get("SENTINEL_CAMERA_ID", "cam00"),
+                   help="Camera ID for incident events")
+    p.add_argument("--window-frames", type=int,
+                   default=int(os.environ.get("SENTINEL_WINDOW_FRAMES", str(DEFAULT_WINDOW_FRAMES))),
+                   help="Sliding window size (processed frames)")
+    p.add_argument("--incident-rate-limit", type=float,
+                   default=float(os.environ.get("SENTINEL_RATE_LIMIT_S", str(DEFAULT_INCIDENT_RATE_LIMIT_S))),
+                   help="Min seconds between incident triggers")
+    p.add_argument("--enable-vlm", action="store_true",
+                   help="Enable VLM analysis on incident windows")
+    p.add_argument("--enable-rag", action="store_true",
+                   help="Enable RAG decision after VLM analysis")
+    p.add_argument("--s3-bucket", default=os.environ.get("SENTINEL_S3_BUCKET"),
+                   help="S3 bucket for keyframe uploads (optional)")
+    p.add_argument("--s3-prefix", default=os.environ.get("SENTINEL_S3_PREFIX", "sentinel/incidents"),
+                   help="S3 key prefix for keyframes")
+    p.add_argument("--vlm-base-url", default=os.environ.get("OPENAI_BASE_URL"),
+                   help="Optional OpenAI base URL override")
     args = p.parse_args()
+
+    if args.enable_rag and not args.enable_vlm:
+        print("[motion_first] --enable-rag implies --enable-vlm; enabling VLM.")
+        args.enable_vlm = True
 
     tracker = MotionFirstTracker(
         video_source=args.source,
@@ -811,6 +1158,14 @@ def main():
         device=args.device,
         roi_y_frac=args.roi_y_frac,
         target_fps=args.target_fps,
+        camera_id=args.camera_id,
+        window_frames=args.window_frames,
+        incident_rate_limit_s=args.incident_rate_limit,
+        enable_vlm=args.enable_vlm,
+        enable_rag=args.enable_rag,
+        s3_bucket=args.s3_bucket,
+        s3_prefix=args.s3_prefix,
+        vlm_base_url=args.vlm_base_url,
     )
     tracker.run(display=not args.no_display)
 

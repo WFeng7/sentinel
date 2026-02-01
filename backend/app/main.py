@@ -5,12 +5,17 @@ import json
 import os
 import re
 import time
+import sys
+import subprocess
+from pathlib import Path
 from datetime import datetime, timezone
+from collections import deque
 from urllib.parse import urljoin
 
 import cv2
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from app.vlm import EventAnalyzer, render_human_narrative, EventContext
 from app.rag import (
@@ -30,6 +35,10 @@ load_dotenv(dotenv_path=_root_env, override=False)
 app = FastAPI(title="Sentinel API")
 
 _rag_engine: DecisionEngine | None = None
+_incident_log: deque = deque(maxlen=100)
+_camera_label_cache: dict[str, str] = {}
+_camera_label_cache_ts: float = 0.0
+_camera_label_cache_ttl_s = 300.0
 
 
 def get_decision_engine() -> DecisionEngine:
@@ -66,6 +75,150 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+def _load_camera_label_map() -> dict[str, str]:
+    global _camera_label_cache, _camera_label_cache_ts
+    now = time.time()
+    if _camera_label_cache and (now - _camera_label_cache_ts) < _camera_label_cache_ttl_s:
+        return _camera_label_cache
+    cameras = load_cameras_from_file() or CAMERA_CACHE.get("cameras") or []
+    label_map: dict[str, str] = {}
+    for cam in cameras:
+        cam_id = cam.get("id")
+        label = cam.get("label") or ""
+        if cam_id:
+            label_map[cam_id] = label
+    _camera_label_cache = label_map
+    _camera_label_cache_ts = now
+    return label_map
+
+
+def _resolve_camera_label(camera_id: str | None) -> str:
+    if not camera_id:
+        return ""
+    label_map = _load_camera_label_map()
+    return label_map.get(camera_id, "")
+
+
+@app.get("/incidents")
+async def list_incidents(limit: int = 20):
+    items = list(_incident_log)
+    return {"incidents": items[: max(1, min(limit, 100))]}
+
+
+@app.post("/incidents")
+async def add_incident(body: dict):
+    camera_id = body.get("camera_id") or ""
+    event_id = body.get("event_id") or f"evt_{camera_id}_{int(time.time())}"
+    score = body.get("score")
+    events = body.get("events")
+    timestamp = body.get("timestamp") or datetime.now(timezone.utc).isoformat()
+    label = body.get("label") or _resolve_camera_label(camera_id)
+    incident = {
+        "id": event_id,
+        "camera_id": camera_id,
+        "label": label,
+        "score": score,
+        "events": events,
+        "timestamp": timestamp,
+    }
+    _incident_log.appendleft(incident)
+    return {"status": "ok", "incident": incident}
+
+
+@app.get("/fake-camera/{filename}")
+async def fake_camera_file(filename: str):
+    if filename != "2026-01-3015-25-54.mov":
+        raise HTTPException(status_code=404, detail="Fake camera file not found")
+    repo_root = Path(__file__).resolve().parents[2]
+    file_path = repo_root / filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Fake camera file not found")
+    return FileResponse(path=str(file_path), filename=file_path.name)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@app.get("/workers/motion-first/status")
+async def motion_first_status():
+    running = _multi_worker_proc is not None and _multi_worker_proc.poll() is None
+    return {
+        "running": running,
+        "pid": _multi_worker_proc.pid if running else None,
+        "started_at": _multi_worker_started_at,
+    }
+
+
+@app.post("/workers/motion-first/start")
+async def motion_first_start(
+    max_workers: int | None = None,
+    target_fps: float | None = None,
+    threshold: float | None = None,
+    window_frames: int | None = None,
+    incident_rate_limit: float | None = None,
+    enable_vlm: bool | None = None,
+    enable_rag: bool | None = None,
+    testincident: bool | None = None,
+):
+    global _multi_worker_proc, _multi_worker_started_at
+    if _multi_worker_proc is not None and _multi_worker_proc.poll() is None:
+        return {
+            "status": "already_running",
+            "pid": _multi_worker_proc.pid,
+            "started_at": _multi_worker_started_at,
+        }
+
+    max_workers = max_workers or int(os.environ.get("SENTINEL_MULTI_MAX_WORKERS", "2"))
+    target_fps = target_fps or float(os.environ.get("SENTINEL_MULTI_TARGET_FPS", "5.0"))
+    threshold = threshold or float(os.environ.get("SENTINEL_MULTI_THRESHOLD", "4.0"))
+    window_frames = window_frames or int(os.environ.get("SENTINEL_MULTI_WINDOW_FRAMES", "50"))
+    incident_rate_limit = incident_rate_limit or float(os.environ.get("SENTINEL_MULTI_RATE_LIMIT_S", "60.0"))
+    if enable_vlm is None:
+        enable_vlm = _env_bool("SENTINEL_MULTI_ENABLE_VLM", False)
+    if enable_rag is None:
+        enable_rag = _env_bool("SENTINEL_MULTI_ENABLE_RAG", False)
+    if enable_rag and not enable_vlm:
+        enable_vlm = True
+
+    if testincident is None:
+        testincident = _env_bool("TESTINCIDENT", False)
+
+    cmd = _multi_worker_cmd(
+        max_workers=max_workers,
+        target_fps=target_fps,
+        threshold=threshold,
+        window_frames=window_frames,
+        incident_rate_limit=incident_rate_limit,
+        enable_vlm=enable_vlm,
+        enable_rag=enable_rag,
+    )
+    if testincident:
+        cmd.append("--test-incident")
+    repo_root = Path(__file__).resolve().parents[2]
+    _multi_worker_proc = subprocess.Popen(cmd, cwd=str(repo_root), env=os.environ.copy())
+    _multi_worker_started_at = time.time()
+    return {"status": "started", "pid": _multi_worker_proc.pid, "cmd": cmd}
+
+
+@app.post("/workers/motion-first/stop")
+async def motion_first_stop():
+    global _multi_worker_proc
+    if _multi_worker_proc is None or _multi_worker_proc.poll() is not None:
+        _multi_worker_proc = None
+        return {"status": "not_running"}
+    _multi_worker_proc.terminate()
+    try:
+        _multi_worker_proc.wait(timeout=3)
+    except Exception:
+        _multi_worker_proc.kill()
+    _multi_worker_proc = None
+    return {"status": "stopped"}
 
 
 DOT_CAMERAS_PAGE = "https://www.dot.ri.gov/travel/cameras_metro.php"
@@ -400,6 +553,47 @@ async def enrich_cameras_with_geo(cameras: list[dict]) -> None:
 
 
 CAMERA_CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "cameras_cache.txt")
+
+# ---------------------------------------------------------------------------
+# Motion-first multi-camera worker control
+# ---------------------------------------------------------------------------
+
+_multi_worker_proc: subprocess.Popen | None = None
+_multi_worker_started_at: float | None = None
+
+
+def _multi_worker_cmd(
+    *,
+    max_workers: int,
+    target_fps: float,
+    threshold: float,
+    window_frames: int,
+    incident_rate_limit: float,
+    enable_vlm: bool,
+    enable_rag: bool,
+) -> list[str]:
+    repo_root = Path(__file__).resolve().parents[2]
+    script = repo_root / "experiments" / "motion_first_multi.py"
+    cmd = [
+        sys.executable,
+        str(script),
+        "--no-display",
+        "--max-workers",
+        str(max_workers),
+        "--target-fps",
+        str(target_fps),
+        "--threshold",
+        str(threshold),
+        "--window-frames",
+        str(window_frames),
+        "--incident-rate-limit",
+        str(incident_rate_limit),
+    ]
+    if enable_vlm:
+        cmd.append("--enable-vlm")
+    if enable_rag:
+        cmd.append("--enable-rag")
+    return cmd
 
 def load_cameras_from_file() -> list[dict] | None:
     """Load cameras from cache file if it exists and is recent."""

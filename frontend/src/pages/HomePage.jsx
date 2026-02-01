@@ -107,14 +107,20 @@ export default function HomePage() {
         <div className="pointer-events-none absolute inset-0 z-[3] flex flex-col items-center justify-center px-6 text-center">
           <h2 className="max-w-4xl text-4xl font-light leading-tight tracking-tight text-white md:text-5xl lg:text-6xl">
             What looks like a{" "}
-            <Highlighter action="highlight" color="#263265" animationDuration={1100} strokeWidth={2} padding={4}>
-              quiet road
-            </Highlighter>
+            <span className="md:hidden">quiet road</span>
+            <span className="hidden md:inline">
+              <Highlighter action="highlight" color="#263265" animationDuration={1100} strokeWidth={2} padding={4}>
+                quiet road
+              </Highlighter>
+            </span>
             <br />
             <span className="font-montecarlo text-[clamp(3.25rem,6.8vw,8.5rem)]">
-              <Highlighter action="underline" color="#f7c948" animationDuration={1200} strokeWidth={3} padding={2}>
-                is also a flow of detection
-              </Highlighter>
+              <span className="md:hidden">is also a flow of detection</span>
+              <span className="hidden md:inline">
+                <Highlighter action="underline" color="#f7c948" animationDuration={1200} strokeWidth={3} padding={2}>
+                  is also a flow of detection
+                </Highlighter>
+              </span>
             </span>
             .
           </h2>

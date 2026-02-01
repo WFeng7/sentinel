@@ -36,6 +36,20 @@ export async function fetchHealth() {
   return response.json()
 }
 
+export async function startMotionFirstWorkers(options = {}) {
+  const url = new URL(`${API_BASE}/workers/motion-first/start`)
+  Object.entries(options).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      url.searchParams.set(key, String(value))
+    }
+  })
+  const response = await fetch(url.toString(), { method: 'POST' })
+  if (!response.ok) {
+    throw new Error('Failed to start motion-first workers')
+  }
+  return response.json()
+}
+
 function normalizeCameraEntry(entry, index) {
   if (typeof entry === 'string') {
     return { url: entry, label: `Camera ${index + 1}` }
@@ -80,6 +94,16 @@ export async function fetchLocationVlm({ cameraId, label, streamUrl }) {
   })
   if (!response.ok) {
     throw new Error('Failed to fetch VLM analysis')
+  }
+  return response.json()
+}
+
+export async function fetchIncidents(limit = 20) {
+  const url = new URL(`${API_BASE}/incidents`)
+  url.searchParams.set('limit', String(limit))
+  const response = await fetch(url.toString())
+  if (!response.ok) {
+    throw new Error('Failed to fetch incidents')
   }
   return response.json()
 }
