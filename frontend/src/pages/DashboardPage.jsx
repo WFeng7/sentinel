@@ -4,6 +4,8 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { fetchCameraStreams, fetchHealth, fetchLocationVlm } from '../services/cameras.js'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
+import VLMRAGTile from '../components/VLMRAGTile.jsx'
+import { useVLMRAGLoop } from '../hooks/useVLMRAGLoop.js'
 
 const DASHBOARD_LOADING_MESSAGES = [
   'Warming up camera streams',
@@ -55,6 +57,7 @@ export default function DashboardPage() {
   const [expandedMessageIndex, setExpandedMessageIndex] = useState(0)
   const [expandedLoading, setExpandedLoading] = useState(false)
   const [showMap, setShowMap] = useState(false)
+  const [vlmRAGEnabled, setVlmRAGEnabled] = useState(new Set())
 
   const mapContainerRef = useRef(null)
   const mapRef = useRef(null)
@@ -184,9 +187,8 @@ export default function DashboardPage() {
       }
     }
 
-    if (!cachedStreamsRaw?.length) {
-      loadStreams(false)
-    }
+    // Always refresh in background, even if we have cache
+    loadStreams(false)
 
     const interval = setInterval(() => {
       loadStreams(true)
@@ -1033,6 +1035,14 @@ export default function DashboardPage() {
                   >
                     {isHidden ? '+' : '-'}
                   </button>
+                  <VLMRAGTile stream={stream} enabled={vlmRAGEnabled.has(streamKey)} onToggle={(enabled) => {
+                    setVlmRAGEnabled((prev) => {
+                      const next = new Set(prev)
+                      if (enabled) next.add(streamKey)
+                      else next.delete(streamKey)
+                      return next
+                    })
+                  }} />
 
                   {/* Labels: NO border, NO hover behavior */}
                   {showLabels && (

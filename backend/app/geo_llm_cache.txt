@@ -41,3 +41,8 @@
 {"label": "I-95 N @ Lonsdale", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769924750.5152152}
 {"label": "I-95 S @ Rt 10", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769924751.966163}
 {"label": "Tobey Street", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769924752.9880252}
+{"label": "Hartford Ave", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769925485.033752}
+{"label": "Dean Street", "geo": {"lat": 41.8231, "lng": -71.4128}, "miss": false, "ts": 1769925485.609236}
+{"label": "Atwells Ave", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769925486.195724}
+{"label": "I-95 N @ Broadway", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769925486.811251}
+{"label": "Westminster Street", "geo": {"lat": 41.8231, "lng": -71.4128}, "miss": false, "ts": 1769925487.431752}

@@ -483,6 +483,92 @@ async def vlm_analyze(body: dict):
 # ---------------------------------------------------------------------------
 
 
+@app.post("/vlm+rag")
+async def vlm_and_rag(body: dict):
+    """
+    Combined VLM + RAG endpoint.
+    Accepts: { "camera_id": "...", "label": "...", "stream_url": "..." }
+    Returns: { vlm: {...}, rag: {...} }
+    """
+    camera_id = body.get("camera_id")
+    label = body.get("label")
+    stream_url = body.get("stream_url")
+    if not (camera_id and label and stream_url):
+        raise HTTPException(status_code=400, detail="camera_id, label, and stream_url required")
+
+    # TODO: Sample first/middle/last frames over 10s from the HLS stream.
+    # For now, we’ll accept keyframes from the client to keep this simple.
+    keyframes_raw = body.get("keyframes") or []
+    keyframes: list[tuple[float, bytes]] = []
+    for kf in keyframes_raw[:3]:
+        ts = float(kf.get("ts", 0))
+        b64 = kf.get("base64") or kf.get("data") or ""
+        if b64:
+            keyframes.append((ts, base64.standard_b64decode(b64)))
+
+    if not keyframes:
+        raise HTTPException(status_code=400, detail="No keyframes provided")
+
+    # VLM step
+    context = {"camera_id": camera_id, "label": label}
+    analyzer = get_vlm_analyzer()
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
+    try:
+        vlm_result = analyzer.analyze_from_dict(context, keyframes=keyframes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Map VLM output to RAG input (mirroring video_to_vlm.py)
+    ev = getattr(vlm_result, "event", None)
+    rag_info = getattr(vlm_result, "rag", None)
+    evidence = getattr(vlm_result, "evidence", None) or []
+
+    event_type_candidates = []
+    if ev:
+        if getattr(ev, "type", None):
+            event_type_candidates.append(str(ev.type))
+        if getattr(ev, "category", None):
+            cat = ev.category
+            event_type_candidates.append(cat.value if hasattr(cat, "value") else str(cat))
+    tags = getattr(rag_info, "tags", []) if rag_info else []
+    event_type_candidates.extend(tags[:5])
+
+    signals = []
+    for e in evidence:
+        if isinstance(e, dict):
+            if e.get("claim"):
+                signals.append(str(e["claim"])[:200])
+            signals.extend(e.get("signals", [])[:3])
+        elif hasattr(e, "claim"):
+            signals.append(str(e.claim)[:200])
+    queries = getattr(rag_info, "queries", []) if rag_info else []
+    signals.extend(queries[:3])
+
+    rag_input = {
+        "event_type_candidates": event_type_candidates,
+        "signals": signals[:10],
+        "city": "Providence",
+    }
+
+    # RAG step
+    inp = DecisionInput(
+        event_type_candidates=rag_input["event_type_candidates"],
+        signals=rag_input["signals"],
+        city=rag_input["city"],
+    )
+    engine = get_decision_engine()
+    rag_output = engine.decide(inp)
+
+    return {
+        "vlm": {
+            "result": vlm_result.model_dump(mode="json"),
+            "narrative": render_human_narrative(vlm_result),
+        },
+        "rag": rag_output.to_dict(),
+    }
+
+
 @app.post("/rag/decide")
 async def rag_decide(body: dict):
     """
