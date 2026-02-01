@@ -1,252 +1,129 @@
-import { useRef, useState, useEffect } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import Globe from 'react-globe.gl'
 import ParticleField from '../components/ParticleField.jsx'
+import { Highlighter } from '../components/ui/highlighter.jsx'
 
 export default function HomePage() {
-  const productDemoRef = useRef(null)
-  const [animationProgress, setAnimationProgress] = useState(0)
-  const [footerProgress, setFooterProgress] = useState(0)
-  const [isLocked, setIsLocked] = useState(false)
-  const lockedScrollY = useRef(null)
-  const unlockOffset = useRef(0)
-  const progressRef = useRef(0)
+  const navigate = useNavigate()
+  const globeRef = useRef(null)
+  const navigatedRef = useRef(false)
+  const [scrollY, setScrollY] = useState(0)
+  const [isScrolling, setIsScrolling] = useState(false)
+  const scrollTimeoutRef = useRef(null)
+  const virtualScrollRef = useRef(0)
 
-  // Animation thresholds (unlock when yellow box has faded) - spaced out for longer animation
-  const ANIMATION_COMPLETE = 0.92
-  const WHEEL_SPEED = 0.0007
+  const ROTATE_SPEED_IDLE = 0.35
+  const ROTATE_SPEED_SCROLL = 1.8
+  const ROTATE_SPEED_LOAD = 0.5
+  const scrollPixels = 1200
+  const target = useMemo(() => ({ lat: 41.824, lng: -71.4128 }), [])
+
+  const clamp01 = (x) => Math.min(1, Math.max(0, x))
+  const easeInOutCubic = (t) =>
+    t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
 
   useEffect(() => {
-    progressRef.current = animationProgress
-  }, [animationProgress])
+    const onWheel = (event) => {
+      if (window.scrollY > 2) return
+      event.preventDefault()
 
-  useEffect(() => {
-    const section = productDemoRef.current
-    if (!section) return
+      const delta = event.deltaY
+      const next = Math.min(scrollPixels, Math.max(0, virtualScrollRef.current + delta))
+      virtualScrollRef.current = next
+      setScrollY(next)
+      setIsScrolling(true)
 
-    const handleScroll = () => {
-      const rect = section.getBoundingClientRect()
-      const viewportHeight = window.innerHeight
-      
-      // Check if we should lock: section top at/above viewport top and animation not complete
-      const shouldLock = rect.top <= 0 && rect.bottom > 0 && progressRef.current < ANIMATION_COMPLETE
-      
-      if (shouldLock && !isLocked) {
-        setIsLocked(true)
-        setAnimationProgress(0)
-        setFooterProgress(0)
-        return
-      }
-      
-      if (isLocked) return
-      
-      // Footer fade: when demo section bottom enters viewport from below, start transition
-      if (rect.bottom <= viewportHeight && rect.bottom >= 0) {
-        setFooterProgress(1 - rect.bottom / viewportHeight)
-      } else if (rect.bottom < 0) {
-        setFooterProgress(1)
-      } else {
-        setFooterProgress(0)
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current)
+      scrollTimeoutRef.current = setTimeout(() => setIsScrolling(false), 160)
+
+      if (next >= scrollPixels && !navigatedRef.current) {
+        navigatedRef.current = true
+        navigate('/dashboard')
       }
     }
 
-    const handleWheel = (e) => {
-      if (!isLocked) return
-      
-      e.preventDefault()
-      const delta = e.deltaY * WHEEL_SPEED
-      const nextProgress = Math.min(1, Math.max(0, progressRef.current + delta))
-      const scrollingUp = e.deltaY < 0
-      const wouldComplete = nextProgress >= ANIMATION_COMPLETE
-      const wouldExitUp = nextProgress <= 0.05
-      
-      // Scrolling up: when animation would reverse to start, unlock and let scroll through
-      // so user can return to hero (avoids blank/stuck state)
-      if (scrollingUp && wouldExitUp) {
-        setIsLocked(false)
-        unlockOffset.current = 0
-        setAnimationProgress(0)
-        return
-      }
-      
-      // Scrolling down: when animation completes, unlock and give immediate scroll
-      // so there's no friction when leaving the section
-      if (!scrollingUp && wouldComplete) {
-        setIsLocked(false)
-        setAnimationProgress(ANIMATION_COMPLETE)
-        unlockOffset.current = 220
-        return
-      }
-      
-      setAnimationProgress(nextProgress)
-    }
-
-    handleScroll()
-    window.addEventListener('scroll', handleScroll, { passive: true })
-    window.addEventListener('wheel', handleWheel, { passive: false })
-    
+    window.addEventListener('wheel', onWheel, { passive: false })
     return () => {
-      window.removeEventListener('scroll', handleScroll)
-      window.removeEventListener('wheel', handleWheel)
+      window.removeEventListener('wheel', onWheel)
     }
-  }, [isLocked, animationProgress])
+  }, [navigate])
+
+  const zoomProgress = useMemo(() => {
+    const raw = clamp01(scrollY / scrollPixels)
+    return easeInOutCubic(raw)
+  }, [scrollY])
 
   useEffect(() => {
-    if (!isLocked) return
-    const scrollY = window.scrollY
-    lockedScrollY.current = scrollY
-    const original = {
-      position: document.body.style.position,
-      top: document.body.style.top,
-      width: document.body.style.width,
-      overflow: document.body.style.overflow,
-    }
-    document.body.style.position = 'fixed'
-    document.body.style.top = `-${scrollY}px`
-    document.body.style.width = '100%'
-    document.body.style.overflow = 'hidden'
+    const globe = globeRef.current
+    if (!globe) return
 
-    return () => {
-      document.body.style.position = original.position
-      document.body.style.top = original.top
-      document.body.style.width = original.width
-      document.body.style.overflow = original.overflow
-      if (lockedScrollY.current !== null) {
-        const nextY = lockedScrollY.current + (unlockOffset.current || 0)
-        window.scrollTo(0, nextY)
-      }
-      lockedScrollY.current = null
-      unlockOffset.current = 0
-    }
-  }, [isLocked])
+    const controls = globe.controls()
+    controls.autoRotate = !isScrolling
+    controls.autoRotateSpeed = isScrolling ? ROTATE_SPEED_SCROLL : ROTATE_SPEED_IDLE
+    controls.enableZoom = false
+    controls.enablePan = false
+
+    const startAltitude = 2.6
+    const endAltitude = 0.25
+    const altitude = startAltitude + (endAltitude - startAltitude) * zoomProgress
+    const spinLng = target.lng + 360 * zoomProgress
+    globe.pointOfView({ lat: target.lat, lng: spinLng, altitude }, 0)
+  }, [zoomProgress, target, isScrolling])
 
   return (
-    <div className="w-screen min-h-screen flex flex-col gap-8 overflow-x-hidden overflow-y-auto pb-16 text-slate-200 md:gap-12 md:pb-24">
-      {/* Hero Section - image background + particles + overlay */}
-      <div className="relative w-full min-h-screen flex-1 bg-[#050505] overflow-hidden">
-        <div
-          className="absolute inset-0 z-0 bg-cover bg-center"
-          style={{ backgroundImage: "url('/images/home.jpg')" }}
-        />
-        <div className="absolute inset-0 z-[1] bg-gradient-to-b from-slate-950/50 via-slate-950/30 to-slate-950/70" />
+    <div className="h-screen w-screen overflow-hidden bg-black">
+      <div className="relative h-screen w-screen">
+        <div className="absolute inset-0 z-[1]">
+          <Globe
+            ref={globeRef}
+            backgroundColor="#000000"
+            globeImageUrl="//unpkg.com/three-globe/example/img/earth-blue-marble.jpg"
+            bumpImageUrl="//unpkg.com/three-globe/example/img/earth-topology.png"
+            showAtmosphere
+            atmosphereAltitude={0.22}
+            atmosphereColor="#7dd3fc"
+            onGlobeReady={() => {
+              const globe = globeRef.current
+              if (!globe) return
+              if (typeof globe.renderer === 'function') {
+                const renderer = globe.renderer()
+                if (renderer?.setPixelRatio) {
+                  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
+                }
+              }
+              globe.pointOfView({ lat: target.lat, lng: target.lng, altitude: 2.6 }, 0)
+              const controls = globe.controls()
+              controls.autoRotate = true
+              controls.autoRotateSpeed = ROTATE_SPEED_LOAD
+              controls.enableZoom = false
+              controls.enablePan = false
+            }}
+          />
+        </div>
         <div className="absolute inset-0 z-[2]">
           <ParticleField />
         </div>
-        {/* Overlay - text only */}
-        <div className="absolute inset-0 z-10 flex flex-col justify-between pointer-events-none">
-          <div className="flex justify-between items-start p-8 md:p-12">
-            <div className="text-xs uppercase tracking-[0.4em] text-slate-400">Sentinel</div>
-          </div>
-          <div className="px-8 pb-32 md:px-16 md:pb-40">
-            <h2 className="max-w-3xl text-4xl font-light leading-tight text-white md:text-5xl lg:text-6xl">
-              What looks like a quiet road
-              <br />
-              <span className="text-slate-400">is also a flow of detection.</span>
-            </h2>
-            <p className="mt-8 text-lg text-slate-400 max-w-xl">
-              We build technology to surface incidents from live camera feeds in real time.
-            </p>
-          </div>
-          <div className="px-8 pb-8 md:px-16">
-            <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Scroll to discover</p>
-          </div>
+        <div className="pointer-events-none absolute inset-0 z-[3] flex flex-col items-center justify-center px-6 text-center">
+          <h2 className="max-w-4xl text-4xl font-light leading-tight tracking-tight text-white md:text-5xl lg:text-6xl">
+            What looks like a{" "}
+            <Highlighter action="highlight" color="#263265" animationDuration={1100} strokeWidth={2} padding={4}>
+              quiet road
+            </Highlighter>
+            <br />
+            <span className="font-montecarlo text-[clamp(3.25rem,6.8vw,8.5rem)]">
+              <Highlighter action="underline" color="#f7c948" animationDuration={1200} strokeWidth={3} padding={2}>
+                is also a flow of detection
+              </Highlighter>
+            </span>
+            .
+          </h2>
+          <p className="mt-16 max-w-md text-base text-slate-200 md:text-lg tracking-tight">
+            Sentinel monitors Providence&apos;s roads with SoTA computer vision models to alert emergency
+            providers about accidents within milliseconds.
+          </p>
         </div>
       </div>
-
-      {/* Product Demo Section - fixed highway background + scroll-triggered highlights */}
-      <section
-        ref={productDemoRef}
-        className="relative w-full min-h-[100vh] bg-slate-950"
-      >
-        {/* Fixed background image (stays in place while scrolling) */}
-        <div
-          className="sticky top-0 left-0 w-full h-screen bg-center bg-cover bg-no-repeat transition-opacity duration-700 pointer-events-none"
-          style={{
-            backgroundImage: "url('/images/product-demo-bg.png')",
-            backgroundAttachment: 'fixed',
-            opacity: 1 - footerProgress,
-          }}
-        >
-          {/* Highlight 1: Firetruck - appears first, then fades as yellow appears */}
-          <div
-            className="absolute border-4 border-red-500 rounded-lg bg-red-500/10 transition-opacity duration-300"
-            style={{
-              left: '49%',
-              top: '27%',
-              width: '12%',
-              height: '30%',
-              opacity: (() => {
-                const p = animationProgress
-                // Stage 1: Red box appears (0.06 -> 0.18)
-                if (p < 0.06) return 0
-                if (p < 0.18) return (p - 0.06) / 0.12
-                // Stage 2: Red box stays visible (0.18 -> 0.42)
-                if (p < 0.42) return 1
-                // Stage 3: Red box fades as yellow appears (0.42 -> 0.58)
-                if (p < 0.58) return 1 - ((p - 0.42) / 0.16)
-                return 0
-              })(),
-            }}
-          >
-            <span className="absolute -top-10 left-0 text-sm font-semibold text-red-400 drop-shadow-lg">
-              Emergency response
-            </span>
-          </div>
-          {/* Highlight 2: Stopped car - appears as red fades */}
-          <div
-            className="absolute border-4 border-amber-400 rounded-lg bg-amber-400/10 transition-opacity duration-300"
-            style={{
-              left: '44%',
-              top: '59%',
-              width: '18%',
-              height: '35%',
-              opacity: (() => {
-                const p = animationProgress
-                // Stage 1: Yellow box appears as red fades (0.42 -> 0.58)
-                if (p < 0.42) return 0
-                if (p < 0.58) return (p - 0.42) / 0.16
-                // Stage 2: Yellow box stays visible (0.58 -> 0.75)
-                if (p < 0.75) return 1
-                // Stage 3: Yellow box fades out (0.75 -> 0.92)
-                if (p < 0.92) return 1 - ((p - 0.75) / 0.17)
-                return 0
-              })(),
-            }}
-          >
-            <span className="absolute -top-10 left-0 text-sm font-semibold text-amber-400 drop-shadow-lg">
-              Incident / stopped vehicle
-            </span>
-          </div>
-        </div>
-      </section>
-
-      {/* Footer - Walkthrough (fades in as demo fades out) */}
-      <footer
-        className="relative w-full min-h-screen flex flex-col items-center justify-center text-center bg-slate-950 py-20 md:py-32 transition-opacity duration-700"
-        style={{ opacity: footerProgress }}
-      >
-        <div className="max-w-2xl mx-auto px-8">
-          <div className="text-xs uppercase tracking-[0.25em] text-slate-500">Book a walkthrough</div>
-          <h3 className="mt-6 text-3xl font-semibold text-white md:text-4xl leading-tight">
-            See your network in real time
-          </h3>
-          <p className="mt-8 text-base leading-relaxed text-slate-300 md:text-lg">
-            We will map your live feeds, configure alert policies, and surface critical events within days.
-          </p>
-          <div className="mt-12 flex flex-wrap justify-center gap-4">
-            <a
-              href="#"
-              className="rounded-full bg-white text-slate-900 px-8 py-4 text-sm font-semibold hover:bg-slate-100 transition-colors"
-            >
-              Book a demo
-            </a>
-            <a
-              href="#"
-              className="rounded-full border border-slate-600 text-slate-300 px-8 py-4 text-sm font-semibold hover:border-slate-500 hover:text-white transition-colors"
-            >
-              Talk to sales
-            </a>
-          </div>
-        </div>
-      </footer>
     </div>
   )
 }

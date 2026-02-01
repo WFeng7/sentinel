@@ -1,6 +1,24 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { fetchCameraStreams, fetchHealth } from '../services/cameras.js'
+import L from 'leaflet'
+import 'leaflet/dist/leaflet.css'
+import { fetchCameraStreams, fetchHealth, fetchLocationVlm } from '../services/cameras.js'
+
+const DASHBOARD_LOADING_MESSAGES = [
+  'Warming up camera streams',
+  'Balancing live feeds across the grid',
+  'Syncing edge frames to the dashboard',
+  'Hunting for the cleanest frames',
+  'Hunting for the cleanest frames',
+  'Stabilizing the live view'
+]
+
+const EXPANDED_LOADING_MESSAGES = [
+  'Locking onto the live feed',
+  'Sharpening the large view',
+  'Negotiating stream bitrate',
+  'Buffering the high-res window'
+]
 
 export default function DashboardPage() {
   const navigate = useNavigate()
@@ -16,35 +34,53 @@ export default function DashboardPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [showLabels, setShowLabels] = useState(true)
   const [activeIncident, setActiveIncident] = useState(null)
+  const [activeLocation, setActiveLocation] = useState(null)
+  const [vlmResult, setVlmResult] = useState(null)
+  const [vlmLoading, setVlmLoading] = useState(false)
+  const [vlmError, setVlmError] = useState('')
   const [uptime, setUptime] = useState(100)
   const [uptimeSamples, setUptimeSamples] = useState([true])
   const [healthError, setHealthError] = useState('')
+  const [streamLoadStates, setStreamLoadStates] = useState({})
+  const [dashboardMessageIndex, setDashboardMessageIndex] = useState(0)
+  const [expandedMessageIndex, setExpandedMessageIndex] = useState(0)
+  const [expandedLoading, setExpandedLoading] = useState(false)
+  const [showMap, setShowMap] = useState(false)
+
+  const mapContainerRef = useRef(null)
+  const mapRef = useRef(null)
+
+  // keep markers around; don't rebuild on each click
+  const markersLayerRef = useRef(null) // L.LayerGroup
+  const markersByKeyRef = useRef(new Map()) // key -> L.Marker
+  const activeKeyRef = useRef(null)
+
   const orderKey = 'sentinel.cameraOrder.v1'
 
   const incidents = [
     {
       id: 'incident-1',
-      title: 'Motion spike detected',
+      title: 'Multi-car collision reported',
       status: 'Critical',
       statusColor: 'bg-metadata-4',
-      relative: '2m ago',
-      timestamp: '2026-01-31 14:22'
+      relative: '3m ago',
+      timestamp: '2026-02-01 18:08'
     },
     {
       id: 'incident-2',
-      title: 'Access door left open',
+      title: 'Traffic jam forming near merge',
       status: 'Alert',
       statusColor: 'bg-metadata-2',
-      relative: '11m ago',
-      timestamp: '2026-01-31 14:13'
+      relative: '12m ago',
+      timestamp: '2026-02-01 17:59'
     },
     {
       id: 'incident-3',
-      title: 'Shift change logged',
+      title: 'Heavy rain reducing visibility',
       status: 'Info',
       statusColor: 'bg-metadata-3',
-      relative: '28m ago',
-      timestamp: '2026-01-31 13:56'
+      relative: '34m ago',
+      timestamp: '2026-02-01 17:37'
     }
   ]
 
@@ -59,7 +95,9 @@ export default function DashboardPage() {
     if (!url) return null
     const key = item.id ?? url
     const label = item.label ?? ''
-    return { key, url, label }
+    const lat = item.lat ?? item.latitude ?? null
+    const lng = item.lng ?? item.lon ?? item.longitude ?? null
+    return { key, url, label, lat, lng }
   }
 
   const normalizeList = (arr) => (Array.isArray(arr) ? arr.map(normalize).filter(Boolean) : [])
@@ -190,6 +228,16 @@ export default function DashboardPage() {
   }, [expandedKey])
 
   useEffect(() => {
+    if (!expandedKey) {
+      setExpandedLoading(false)
+      setExpandedMessageIndex(0)
+      return
+    }
+    setExpandedLoading(true)
+    setExpandedMessageIndex(0)
+  }, [expandedKey])
+
+  useEffect(() => {
     if (!expandedKey) return
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
@@ -220,6 +268,206 @@ export default function DashboardPage() {
     })
   }, [visibleStreams, searchQuery])
 
+  useEffect(() => {
+    if (!searchResults.length) return
+    setStreamLoadStates((prev) => {
+      const next = { ...prev }
+      let changed = false
+      for (const stream of searchResults) {
+        if (!(stream.key in next)) {
+          next[stream.key] = false
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [searchResults])
+
+  const visibleCount = searchResults.length
+  const loadedCount = searchResults.filter((stream) => streamLoadStates[stream.key]).length
+  const dashboardLoading = visibleCount > 0 && loadedCount !== visibleCount
+
+  useEffect(() => {
+    if (!dashboardLoading) {
+      setDashboardMessageIndex(0)
+      return
+    }
+    const timer = setInterval(() => {
+      setDashboardMessageIndex((prev) => (prev + 1) % DASHBOARD_LOADING_MESSAGES.length)
+    }, 2600)
+    return () => clearInterval(timer)
+  }, [dashboardLoading])
+
+  useEffect(() => {
+    if (!expandedLoading) {
+      setExpandedMessageIndex(0)
+      return
+    }
+    const timer = setInterval(() => {
+      setExpandedMessageIndex((prev) => (prev + 1) % EXPANDED_LOADING_MESSAGES.length)
+    }, 2400)
+    return () => clearInterval(timer)
+  }, [expandedLoading])
+
+  const handleOpenStream = (stream) => {
+    setControlPanelOpen(true)
+    setExpandedKey(stream.key)
+    setExpandedVisible(false)
+  }
+
+  const handleLocationClick = async (stream, label) => {
+    setActiveLocation({ key: stream.key, label, url: stream.url })
+    setVlmLoading(true)
+    setVlmError('')
+    setVlmResult(null)
+    try {
+      const data = await fetchLocationVlm({
+        cameraId: stream.key,
+        label,
+        streamUrl: stream.url
+      })
+      setVlmResult(data)
+    } catch (err) {
+      setVlmError(err?.message ?? 'Failed to fetch VLM analysis')
+    } finally {
+      setVlmLoading(false)
+    }
+  }
+
+  // Create map ONCE (dark tiles). Keep container mounted; don't destroy on hide.
+  useEffect(() => {
+    if (!mapContainerRef.current) return
+    if (mapRef.current) return
+
+    const mapInstance = L.map(mapContainerRef.current, {
+      center: [41.824, -71.4128],
+      zoom: 12,
+      zoomControl: true,
+      scrollWheelZoom: true
+    })
+
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+    }).addTo(mapInstance)
+
+    markersLayerRef.current = L.layerGroup().addTo(mapInstance)
+    mapRef.current = mapInstance
+
+    return () => {
+      try {
+        markersByKeyRef.current.clear()
+      } catch {}
+      try {
+        mapInstance.remove()
+      } catch {}
+      mapRef.current = null
+      markersLayerRef.current = null
+      activeKeyRef.current = null
+    }
+  }, [])
+
+  // Incremental marker sync: build/update/remove without full rebuilds
+  useEffect(() => {
+    if (!mapRef.current || !markersLayerRef.current) return
+
+    const layer = markersLayerRef.current
+    const byKey = markersByKeyRef.current
+
+    // flat pink pins (#f27fa5), no glow
+    const baseStyle =
+      'width:16px;height:16px;border-radius:9999px;background:#f27fa5;border:2px solid rgba(255,255,255,0.95);'
+    const activeStyle =
+      'width:22px;height:22px;border-radius:9999px;background:#f27fa5;border:2px solid rgba(255,255,255,1);'
+
+    const nextKeys = new Set()
+
+    visibleStreams.forEach((stream, index) => {
+      if (typeof stream.lat !== 'number' || typeof stream.lng !== 'number') return
+
+      const key = stream.key
+      nextKeys.add(key)
+
+      const label = stream.label || `Camera ${index + 1}`
+      const isActive = (activeLocation?.key ?? null) === key
+
+      let marker = byKey.get(key)
+      if (!marker) {
+        const icon = L.divIcon({
+          className: '',
+          html: `<div data-pin="1" style="${isActive ? activeStyle : baseStyle}"></div>`,
+          iconSize: [22, 22],
+          iconAnchor: [11, 11]
+        })
+
+        marker = L.marker([stream.lat, stream.lng], { icon })
+
+        marker.on('click', () => {
+          handleOpenStream(stream)
+          handleLocationClick(stream, label)
+        })
+
+        marker.addTo(layer)
+        byKey.set(key, marker)
+        return
+      }
+
+      const ll = marker.getLatLng()
+      if (ll.lat !== stream.lat || ll.lng !== stream.lng) {
+        marker.setLatLng([stream.lat, stream.lng])
+      }
+    })
+
+    for (const [key, marker] of byKey.entries()) {
+      if (!nextKeys.has(key)) {
+        try {
+          marker.remove()
+        } catch {}
+        byKey.delete(key)
+      }
+    }
+  }, [visibleStreams]) // IMPORTANT: NOT dependent on activeLocation
+
+  // Update only the active marker style (fast)
+  useEffect(() => {
+    if (!markersLayerRef.current) return
+
+    const byKey = markersByKeyRef.current
+    const prevKey = activeKeyRef.current
+    const nextKey = activeLocation?.key ?? null
+
+    if (prevKey === nextKey) return
+
+    const baseStyle =
+      'width:16px;height:16px;border-radius:9999px;background:#f27fa5;border:2px solid rgba(255,255,255,0.95);'
+    const activeStyle =
+      'width:22px;height:22px;border-radius:9999px;background:#f27fa5;border:2px solid rgba(255,255,255,1);'
+
+    const setMarkerStyle = (key, style) => {
+      const marker = byKey.get(key)
+      if (!marker) return
+      const icon = L.divIcon({
+        className: '',
+        html: `<div data-pin="1" style="${style}"></div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11]
+      })
+      marker.setIcon(icon)
+    }
+
+    if (prevKey) setMarkerStyle(prevKey, baseStyle)
+    if (nextKey) setMarkerStyle(nextKey, activeStyle)
+    activeKeyRef.current = nextKey
+  }, [activeLocation])
+
+  useEffect(() => {
+    if (!mapRef.current) return
+    const mapInstance = mapRef.current
+    const timer = setTimeout(() => {
+      mapInstance.invalidateSize()
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [showMap, controlPanelOpen])
+
   const cameraGridColumns = useMemo(() => {
     const total = searchResults.length
     if (total <= 1) return 1
@@ -232,10 +480,46 @@ export default function DashboardPage() {
   }, [searchResults.length])
 
   return (
-    <section
-      className="relative h-screen w-screen bg-slate-950"
-      style={{ cursor: 'default' }}
-    >
+    <section className="relative h-screen w-screen bg-slate-950" style={{ cursor: 'default' }}>
+      <style>{`
+        iframe {
+          scrollbar-width: none;
+          -ms-overflow-style: none;
+        }
+        iframe::-webkit-scrollbar {
+          display: none;
+        }
+        .sentinel-spinner {
+          width: var(--spinner-size, 34px);
+          height: var(--spinner-size, 34px);
+          border-radius: 9999px;
+          border: 2px solid rgba(148, 163, 184, 0.3);
+          border-top-color: rgba(248, 250, 252, 0.9);
+          animation: sentinel-spin 0.9s linear infinite;
+        }
+        .sentinel-sheen {
+          position: relative;
+          overflow: hidden;
+        }
+        .sentinel-sheen::after {
+          content: '';
+          position: absolute;
+          top: -60%;
+          bottom: -60%;
+          left: -60%;
+          width: 60%;
+          background: linear-gradient(120deg, transparent, rgba(255, 255, 255, 0.12), transparent);
+          animation: sentinel-sheen 2s ease-in-out infinite;
+        }
+        @keyframes sentinel-spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes sentinel-sheen {
+          0% { transform: translateX(-120%); }
+          100% { transform: translateX(220%); }
+        }
+      `}</style>
+
       {expandedKey && (
         <div
           className={`fixed top-0 bottom-0 right-0 z-[2147483647] flex items-center justify-center bg-black/70 transition-opacity duration-300 ${
@@ -253,7 +537,7 @@ export default function DashboardPage() {
             onClick={(event) => event.stopPropagation()}
             role="presentation"
           >
-            <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-sm border border-white/10 bg-slate-900/70 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100 backdrop-blur">
+            <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-sm bg-slate-900/70 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100 backdrop-blur">
               {expandedLabel}
             </div>
             <button
@@ -264,11 +548,21 @@ export default function DashboardPage() {
             >
               X
             </button>
+            {expandedLoading && (
+              <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-slate-950/80">
+                <div className="sentinel-sheen flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-slate-900/80 px-6 py-5 text-slate-100 shadow-2xl">
+                  <div className="sentinel-spinner" />
+                  <div className="text-[11px] uppercase tracking-[0.3em] text-slate-400">Loading live view</div>
+                  <div className="text-sm text-slate-200">{EXPANDED_LOADING_MESSAGES[expandedMessageIndex]}</div>
+                </div>
+              </div>
+            )}
             <iframe
               allow="autoplay; fullscreen"
               className="absolute inset-0 h-full w-full"
               src={`/player.html?src=${encodeURIComponent(expandedUrl)}&controls=1&t=${refreshToken}`}
               title={expandedLabel}
+              onLoad={() => setExpandedLoading(false)}
             />
           </div>
         </div>
@@ -277,6 +571,19 @@ export default function DashboardPage() {
       {error && (
         <div className="absolute right-4 top-4 z-50 rounded border border-rose-500/60 bg-slate-900/90 px-3 py-2 text-xs text-rose-200">
           {error}
+        </div>
+      )}
+
+      {dashboardLoading && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/70">
+          <div className="sentinel-sheen flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-slate-900/80 px-6 py-5 text-slate-100 shadow-2xl">
+            <div className="sentinel-spinner" />
+            <div className="text-[11px] uppercase tracking-[0.3em] text-slate-400">Loading dashboard</div>
+            <div className="text-sm text-slate-200">{DASHBOARD_LOADING_MESSAGES[dashboardMessageIndex]}</div>
+            <div className="text-[10px] uppercase tracking-[0.24em] text-slate-500">
+              {loadedCount} of {visibleCount} feeds live
+            </div>
+          </div>
         </div>
       )}
 
@@ -303,7 +610,7 @@ export default function DashboardPage() {
 
       <div className="flex h-full w-full">
         <aside
-          className={`relative h-full overflow-hidden border-r border-white/10 bg-slate-950/80 text-slate-100 transition-all duration-300 ${
+          className={`relative h-full overflow-y-auto border-r border-white/10 bg-slate-950/80 text-slate-100 transition-all duration-300 ${
             controlPanelOpen ? 'w-1/3 opacity-100' : 'w-0 opacity-0 pointer-events-none'
           }`}
         >
@@ -332,8 +639,9 @@ export default function DashboardPage() {
               </div>
             </div>
           )}
-            <div className="flex h-full flex-col gap-5 p-6">
-              <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Control Panel</div>
+
+          <div className="flex h-full flex-col gap-5 p-6">
+            <div className="text-xs uppercase tracking-[0.2em] text-slate-400">Control Panel</div>
 
             <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
               <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400">
@@ -375,6 +683,80 @@ export default function DashboardPage() {
                 />
               </div>
             </div>
+
+            <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
+              <button
+                className="flex w-full items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400"
+                onClick={() => setShowMap((prev) => !prev)}
+                type="button"
+              >
+                <span>Show map</span>
+                <span className="text-sm">{showMap ? '−' : '+'}</span>
+              </button>
+
+              {/* keep container mounted so map stays alive */}
+              <div
+                className={`rounded-md border border-white/10 bg-slate-950/80 transition-all duration-200 ${
+                  showMap ? 'opacity-100' : 'pointer-events-none opacity-0 h-0 overflow-hidden p-0 border-transparent'
+                }`}
+              >
+                <div
+                  ref={mapContainerRef}
+                  className="aspect-square overflow-hidden rounded-md border border-white/10"
+                  style={{ background: '#0b1020' }}
+                /> 
+              </div>
+            </div>
+
+            {activeLocation && (vlmLoading || vlmResult || vlmError) && (
+              <div className="rounded-md border border-white/10 bg-slate-900/60 p-4 text-xs text-slate-200">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                  <span>VLM Insight</span>
+                  <div className="flex items-center gap-2">
+                    {activeLocation?.label && (
+                      <span className="max-w-[140px] truncate text-slate-400">{activeLocation.label}</span>
+                    )}
+                    <button
+                      className="flex h-5 w-5 items-center justify-center rounded-sm border border-white/10 bg-slate-900/70 text-[10px] font-semibold text-slate-200 transition hover:bg-slate-800"
+                      onClick={() => {
+                        setActiveLocation(null)
+                        setVlmResult(null)
+                        setVlmError('')
+                        setVlmLoading(false)
+                      }}
+                      type="button"
+                      aria-label="Close VLM insight"
+                    >
+                      X
+                    </button>
+                  </div>
+                </div>
+                {vlmLoading && (
+                  <div className="mt-2 flex items-center gap-2 text-slate-300">
+                    <div className="sentinel-spinner" style={{ '--spinner-size': '16px' }} />
+                    <span>Requesting live analysis…</span>
+                  </div>
+                )}
+                {vlmError && !vlmLoading && <div className="mt-2 text-rose-300">{vlmError}</div>}
+                {vlmResult && !vlmLoading && (
+                  <div className="mt-2 space-y-2 text-slate-200">
+                    <p className="text-sm text-slate-100">{vlmResult.summary}</p>
+                    {Array.isArray(vlmResult.observations) && vlmResult.observations.length > 0 && (
+                      <ul className="list-disc space-y-1 pl-4 text-[11px] text-slate-400">
+                        {vlmResult.observations.slice(0, 3).map((item, idx) => (
+                          <li key={`${item}-${idx}`}>{item}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {vlmResult.updated_at && (
+                      <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
+                        Updated {new Date(vlmResult.updated_at).toLocaleTimeString()}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
               <div className="flex items-start justify-between gap-4">
@@ -432,9 +814,7 @@ export default function DashboardPage() {
                         <span className={`h-2 w-2 rounded-full ${incident.statusColor}`} />
                         {incident.status}
                       </span>
-                      <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
-                        {incident.relative}
-                      </span>
+                      <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{incident.relative}</span>
                     </div>
                   </button>
                 ))}
@@ -443,11 +823,7 @@ export default function DashboardPage() {
           </div>
         </aside>
 
-        <div
-          className={`relative h-full transition-all duration-300 ${
-            controlPanelOpen ? 'w-2/3' : 'w-full'
-          }`}
-        >
+        <div className={`relative h-full transition-all duration-300 ${controlPanelOpen ? 'w-2/3' : 'w-full'}`}>
           <div
             className="grid h-full w-full gap-0"
             style={{
@@ -494,6 +870,7 @@ export default function DashboardPage() {
                       } else {
                         setExpandedKey(streamKey)
                         setExpandedVisible(false)
+                        handleLocationClick(stream, label)
                       }
                     }}
                     type="button"
@@ -512,23 +889,28 @@ export default function DashboardPage() {
                   >
                     {isHidden ? '+' : '-'}
                   </button>
-                  <div
-                    className={`pointer-events-none absolute bottom-2 left-2 right-2 z-20 rounded-sm border border-white/10 bg-slate-900/80 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100 transition ${
-                      showLabels ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
-                    } ${showLabels ? '' : 'hidden group-hover:block'}`}
-                  >
-                    <span className="block truncate">{label}</span>
-                  </div>
+
+                  {/* Labels: NO border, NO hover behavior */}
+                  {showLabels && (
+                    <div className="pointer-events-none absolute bottom-2 left-2 right-2 z-20 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-slate-100">
+                      <span className="block truncate">{label}</span>
+                    </div>
+                  )}
+
                   <iframe
                     allow="autoplay; fullscreen"
-                    className={`absolute inset-0 z-0 h-full w-full ${
-                      isActiveTile ? 'pointer-events-auto' : 'pointer-events-none'
-                    }`}
+                    className={`absolute inset-0 z-0 h-full w-full ${isActiveTile ? 'pointer-events-auto' : 'pointer-events-none'}`}
                     loading="lazy"
                     src={`/player.html?src=${encodeURIComponent(stream.url)}${
                       isActiveTile ? '&controls=1' : '&hideCursor=1'
                     }`}
                     title={label}
+                    onLoad={() =>
+                      setStreamLoadStates((prev) => ({
+                        ...prev,
+                        [streamKey]: true
+                      }))
+                    }
                   />
                 </div>
               )
