@@ -25,29 +25,25 @@ On first run, the script will download the default YOLO model (`yolov8n.pt`) if 
 Default stream and model:
 
 ```bash
-python main.py
+python object_tracking.py
 ```
 
-With options:
+### Event detection + VLM analysis
+
+When traffic changes (sustained bbox overlap, rapid deceleration), the pipeline can trigger a VLM call to produce structured incident reports.
 
 ```bash
-python main.py --url "https://cdn3.wowza.com/1/eUp6WUZ2Q0NiTnNh/K2VvaWJo/hls/fj9xgx7n/464/chunklist.m3u8" --model yolov8n.pt --stride 2
+# Enable event detection only (no VLM, no API key needed)
+SENTINEL_EVENT_DETECTION=1 python object_tracking.py
+
+# Enable event detection + VLM (requires OpenAI API key)
+export OPENAI_API_KEY=sk-...
+SENTINEL_EVENT_DETECTION=1 python object_tracking.py
 ```
 
-**Useful arguments:**
+**VLM output:** Machine-readable JSON (incident type, severity, actors, evidence, RAG tags) plus a human-readable dispatch note. Use it for pipelines, RAG retrieval, and playbook routing.
 
-| Argument        | Default | Description                                      |
-|----------------|--------|--------------------------------------------------|
-| `--url`        | (Wowza) | HLS stream URL (.m3u8)                          |
-| `--model`      | yolov8n.pt | YOLO model path or name (e.g. yolov8s.pt)   |
-| `--stride`     | 1      | Run YOLO every N frames (2 or 3 for speed)       |
-| `--conf`       | 0.25   | Detection confidence threshold                  |
-| `--iou`        | 0.45   | NMS IOU threshold                                |
-| `--imgsz`      | 640    | YOLO input size                                 |
-| `--max_fps`    | (auto) | Cap display FPS                                  |
-| `--resize_width` | (none) | Resize frame width for faster processing        |
-
-**Controls:** Press **`q`** in the video window to quit.
+**Controls:** Press **`q`** in the video window to quit, **`c`** to clear selection.
 
 ## Troubleshooting
 
