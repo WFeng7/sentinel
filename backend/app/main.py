@@ -17,7 +17,6 @@ from app.rag import (
 
 app = FastAPI(title="Sentinel API")
 
-# RAG decision layer (Stage 3) - lazy init with MockPolicyProvider
 _rag_engine: DecisionEngine | None = None
 
 

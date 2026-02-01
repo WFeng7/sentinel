@@ -170,7 +170,6 @@ SCHEMA_JSON = """
 }
 """
 
-import base64
 import json
 from typing import TYPE_CHECKING
 
@@ -220,8 +219,3 @@ def build_user_prompt(ctx: "EventContext") -> str:
         SCHEMA_JSON,
     ])
     return "\n".join(parts)
-
-
-def encode_frame_b64(frame_bytes: bytes) -> str:
-    """Encode frame bytes to base64 for use in image URLs."""
-    return base64.standard_b64encode(frame_bytes).decode("ascii")

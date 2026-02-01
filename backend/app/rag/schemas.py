@@ -1,19 +1,55 @@
 """
-RAG schemas: policy documents, retrieved excerpts, decision output.
+RAG schemas: policy documents, retrieved excerpts.
 OpenSearch-compatible metadata structure.
 """
 
-from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
 
-@dataclass
-class PolicyDocument:
+
+class RAGBase(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+class DecisionInput(RAGBase):
+    """Input to the decision engine."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event_type_candidates: list[str] = Field(default_factory=list)
+    signals: list[str] = Field(default_factory=list)
+    city: str = "Providence"
+
+
+class SupportingExcerpt(RAGBase):
+    """A policy excerpt supporting the decision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+    document_id: str
+    score: float
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DecisionOutput(RAGBase):
+    """Output from the decision engine."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decision: dict[str, Any] = Field(default_factory=dict)
+    explanation: str = ""
+    supporting_excerpts: list[SupportingExcerpt] = Field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+class PolicyDocument(RAGBase):
     """A policy document chunk. Compatible with OpenSearch document structure."""
 
     id: str
     text: str
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     embedding: list[float] | None = None
 
     def to_opensearch_doc(self) -> dict[str, Any]:
@@ -37,11 +73,10 @@ class PolicyDocument:
         )
 
 
-@dataclass
-class RetrievedExcerpt:
+class RetrievedExcerpt(RAGBase):
     """A policy excerpt retrieved for a query, with metadata."""
-
+    
     document_id: str
     text: str
     score: float
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
