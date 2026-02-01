@@ -9,12 +9,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "leaflet": "^1.9.4",
     "@react-three/drei": "^9.122.0",
     "@react-three/fiber": "^8.18.0",
+    "leaflet": "^1.9.4",
+    "motion": "^12.29.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-globe.gl": "^2.37.0",
     "react-router-dom": "^6.30.0",
+    "rough-notation": "^0.5.1",
     "three": "^0.182.0"
   },
   "devDependencies": {
@@ -22,6 +25,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.10",
+    "tailwindcss-animate": "^1.0.7",
     "vite": "^6.0.0"
   }
 }

@@ -3,7 +3,6 @@ import base64
 import html
 import json
 import os
-import os
 import re
 import time
 from datetime import datetime, timezone
@@ -19,6 +18,13 @@ from app.rag import (
     create_rag_pipeline,
 )
 from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load env from backend/.env and project root .env if present.
+_backend_env = os.path.join(os.path.dirname(__file__), "..", ".env")
+_root_env = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+load_dotenv(dotenv_path=_backend_env, override=True)
+load_dotenv(dotenv_path=_root_env, override=False)
 
 app = FastAPI(title="Sentinel API")
 
@@ -197,6 +203,9 @@ load_geo_llm_cache()
 
 
 async def geocode_with_llm(label: str) -> dict | None:
+    if not os.getenv("OPENAI_API_KEY"):
+        load_dotenv(dotenv_path=_backend_env, override=True)
+        load_dotenv(dotenv_path=_root_env, override=False)
     if not os.getenv("OPENAI_API_KEY"):
         print("[geocode-llm] OPENAI_API_KEY missing; skipping LLM geocode")
         return None
@@ -377,6 +386,7 @@ async def fetch_cameras(force_refresh: bool = False) -> list[dict]:
 
 @app.get("/cameras")
 async def list_cameras(limit: int = 20, refresh: bool = False):
+    print("Called!")
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit must be at least 1")
 
