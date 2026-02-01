@@ -11,7 +11,7 @@ from transformers import pipeline
 from PIL import Image
 
 class ObjectTracker: 
-    def __init__(self, model: str, video_source: str, conf_threshold: float = 0.01, iou_threshold: float = 0.9, imgsz: int = 1280, database_file: str = "speed_database.json", grid_size: int = 20, enable_crash_detection: bool = True, crash_check_interval: int = 30, crash_indicator_threshold: float = 0.75, output_video: str = None):
+    def __init__(self, model: str, video_source: str, conf_threshold: float = 0.01, iou_threshold: float = 0.8, imgsz: int = 1280, database_file: str = "speed_database.json", grid_size: int = 20, enable_crash_detection: bool = True, crash_check_interval: int = 60, crash_indicator_threshold: float = 6.5, output_video: str = None):
         """
         Initialize ObjectTracker.
         
@@ -167,6 +167,9 @@ class ObjectTracker:
         # Acceleration history per track ID for jerk calculation: track_id -> list of (frame_idx, acceleration)
         self._acceleration_history: dict[int, list[tuple[int, float]]] = {}
         self._acceleration_history_max_len = 10  # Keep last 10 acceleration measurements per track
+        # Direction-change indicator: parameters
+        self._direction_flip_window_frames = 10
+        self._direction_flip_cos_threshold = -0.5  # cos(120°)
         
         # Both speeds and accelerations are now in-memory only (no file persistence)
         # Database file parameter kept for backward compatibility but not used
@@ -642,6 +645,75 @@ class ObjectTracker:
         
         return False, {'person_count': 0}
     
+    def _indicator_sustained_stop(self, frame_idx: int) -> tuple[bool, dict]:
+        """Indicator: Detect dramatic slowdown followed by sustained stop.
+        Checks if objects slow down dramatically and then stay stopped for a period.
+        
+        Args:
+            frame_idx: Current frame index
+            
+        Returns:
+            (is_positive, details): Boolean indicating sustained stop detected, and details dict
+        """
+        min_datapoints = 10  # Minimum datapoints per grid cell for reliable analysis
+        min_cells = 10  # Need at least 2 grid cells with sustained stops
+        speed_stopped_threshold = 5.0  # px/s - below this is considered "stopped"
+        sustained_duration = 5  # Number of recent measurements that must be stopped
+        dramatic_slowdown_threshold = 0.5  # Speed must drop to <50% of recent average
+        
+        cells_with_sustained_stop = 0
+        max_slowdown_ratio = 0.0
+        cells_checked = 0
+        cells_insufficient_data = 0
+        
+        # Check grid cells for sustained stops
+        for grid_cell, speeds in self._speed_database.items():
+            if not speeds or len(speeds) < min_datapoints:
+                if speeds:
+                    cells_insufficient_data += 1
+                continue
+            
+            cells_checked += 1
+            
+            # Get recent speeds
+            recent_speeds = speeds[-sustained_duration:]  # Last N measurements
+            historical_speeds = speeds[:-sustained_duration] if len(speeds) > sustained_duration else speeds[:len(speeds)//2]
+            
+            if len(historical_speeds) < 3:
+                continue
+            
+            # Check if recent speeds are all below stopped threshold
+            all_stopped = all(s <= speed_stopped_threshold for s in recent_speeds)
+            
+            if not all_stopped:
+                continue
+            
+            # Check if there was a dramatic slowdown
+            # Compare recent stopped speeds to historical average
+            historical_avg = np.mean(historical_speeds)
+            recent_avg = np.mean(recent_speeds)
+            
+            if historical_avg > 0:
+                slowdown_ratio = recent_avg / historical_avg
+                
+                # Check if slowdown is dramatic (recent speed is much lower than historical)
+                if slowdown_ratio < dramatic_slowdown_threshold and historical_avg > speed_stopped_threshold * 2:
+                    cells_with_sustained_stop += 1
+                    max_slowdown_ratio = min(max_slowdown_ratio, slowdown_ratio)
+        
+        # Only return positive if we have enough reliable data and grid cells
+        is_positive = cells_with_sustained_stop >= min_cells and cells_checked > 0
+        
+        return is_positive, {
+            'cells_with_sustained_stop': cells_with_sustained_stop,
+            'max_slowdown_ratio': max_slowdown_ratio,
+            'speed_stopped_threshold': speed_stopped_threshold,
+            'sustained_duration': sustained_duration,
+            'cells_checked': cells_checked,
+            'cells_insufficient_data': cells_insufficient_data,
+            'min_datapoints_required': min_datapoints
+        }
+    
     def _indicator_high_jerk(self, frame_idx: int) -> tuple[bool, dict]:
         """Indicator: Detect high jerk values using MLE Gaussian on jerk history.
         Fires when absolute jerk has high positive z-score (significantly above mean).
@@ -713,6 +785,64 @@ class ObjectTracker:
             'cells_insufficient_data': cells_insufficient_data,
             'min_datapoints_required': min_datapoints
         }
+
+    def _indicator_direction_reversal(self, frame_idx: int) -> tuple[bool, dict]:
+        """Indicator: Detect abrupt direction reversals (or sharp turns) in a local area.
+        Uses last 3 positions per track to detect a direction flip via cosine similarity.
+        
+        Args:
+            frame_idx: Current frame index
+            
+        Returns:
+            (is_positive, details): Boolean indicating crash detected, and details dict
+        """
+        min_objects = 3  # Minimum objects with flips
+        min_cells = 2  # Minimum distinct grid cells with flips
+        window_frames = self._direction_flip_window_frames
+        cos_threshold = self._direction_flip_cos_threshold
+
+        flips_total = 0
+        cells_with_flips: dict[tuple[int, int], int] = {}
+        tracks_checked = 0
+        tracks_too_short = 0
+        tracks_too_old = 0
+
+        for tid, hist in self._track_history.items():
+            if len(hist) < 3:
+                tracks_too_short += 1
+                continue
+            (f0, x0, y0), (f1, x1, y1), (f2, x2, y2) = hist[-3], hist[-2], hist[-1]
+            if frame_idx - f2 > window_frames:
+                tracks_too_old += 1
+                continue
+            tracks_checked += 1
+
+            v1 = np.array([x1 - x0, y1 - y0], dtype=np.float32)
+            v2 = np.array([x2 - x1, y2 - y1], dtype=np.float32)
+            n1 = np.linalg.norm(v1)
+            n2 = np.linalg.norm(v2)
+            if n1 < 1e-3 or n2 < 1e-3:
+                continue
+
+            cos_sim = float(np.dot(v1, v2) / (n1 * n2))
+            if cos_sim <= cos_threshold:
+                flips_total += 1
+                grid_cell = self._pixel_to_grid_cell(x2, y2)
+                cells_with_flips[grid_cell] = cells_with_flips.get(grid_cell, 0) + 1
+
+        is_positive = flips_total >= min_objects and len(cells_with_flips) >= min_cells
+
+        return is_positive, {
+            'flips_total': flips_total,
+            'cells_with_flips': len(cells_with_flips),
+            'min_objects_required': min_objects,
+            'min_cells_required': min_cells,
+            'window_frames': window_frames,
+            'cos_threshold': cos_threshold,
+            'tracks_checked': tracks_checked,
+            'tracks_too_short': tracks_too_short,
+            'tracks_too_old': tracks_too_old
+        }
     
     def crash_detected(self, frame: np.ndarray, frame_idx: int, result=None) -> tuple[bool, dict]:
         """Main crash detection function that checks multiple indicators.
@@ -729,13 +859,15 @@ class ObjectTracker:
             return False, {}
     
         weights = {}
-        weights['huggingface_model'] = 5
-        weights['sudden_stop'] = 2
-        weights['high_jerk'] = 2
-        weights['person_detected'] = 5
+        weights['huggingface_model'] = 3
+        weights['sudden_stop'] = 1
+        weights['high_jerk'] = 1
+        weights['person_detected'] = 3
+        weights['sustained_stop'] = 3
+        weights['direction_reversal'] = 2
         # Normalize using softmax (exp and normalize)
-        total = sum(math.exp(v) for v in weights.values())
-        weights = {k: math.exp(v) / total for k, v in weights.items()}
+        #total = sum(math.exp(v) for v in weights.values())
+        #weights = {k: math.exp(v) / total for k, v in weights.items()}
         indicators = {}
         confidence_score = 0.0
         
@@ -775,6 +907,24 @@ class ObjectTracker:
         }
         if person_result:
             confidence_score += weights['person_detected']
+        
+        # 5. Sustained stop indicator
+        sustained_stop_result, sustained_stop_details = self._indicator_sustained_stop(frame_idx)
+        indicators['sustained_stop'] = {
+            'positive': sustained_stop_result,
+            'details': sustained_stop_details
+        }
+        if sustained_stop_result:
+            confidence_score += weights['sustained_stop']
+
+        # 6. Direction reversal indicator
+        dir_rev_result, dir_rev_details = self._indicator_direction_reversal(frame_idx)
+        indicators['direction_reversal'] = {
+            'positive': dir_rev_result,
+            'details': dir_rev_details
+        }
+        if dir_rev_result:
+            confidence_score += weights['direction_reversal']
         
         # Debug output (uncomment to debug)
         # print(f"Debug - person_result: {person_result}, confidence_score: {confidence_score:.4f}, threshold: {self.crash_indicator_threshold:.4f}, weights: {weights}")
@@ -920,11 +1070,22 @@ class ObjectTracker:
                             print(f"     - Max jerk: {details.get('max_jerk', 0):.1f} px/s³")
                             print(f"     - Grid cells checked: {details.get('cells_checked', 0)}")
                             print(f"     - Cells with insufficient data: {details.get('cells_insufficient_data', 0)} (min {details.get('min_datapoints_required', 0)} required)")
+                        elif name == 'sustained_stop' and 'cells_with_sustained_stop' in details:
+                            print(f"     - Grid cells with sustained stop: {details['cells_with_sustained_stop']}")
+                            print(f"     - Max slowdown ratio: {details.get('max_slowdown_ratio', 0):.2f} (threshold: {details.get('speed_stopped_threshold', 0):.1f} px/s)")
+                            print(f"     - Sustained duration: {details.get('sustained_duration', 0)} measurements")
+                            print(f"     - Grid cells checked: {details.get('cells_checked', 0)}")
+                            print(f"     - Cells with insufficient data: {details.get('cells_insufficient_data', 0)} (min {details.get('min_datapoints_required', 0)} required)")
                         elif name == 'person_detected' and 'person_count' in details:
                             print(f"     - Persons detected: {details['person_count']}")
                             if details.get('person_count', 0) > 0:
                                 print(f"     - Max confidence: {details.get('max_confidence', 0):.3f}")
                                 print(f"     - Avg confidence: {details.get('avg_confidence', 0):.3f}")
+                        elif name == 'direction_reversal' and 'flips_total' in details:
+                            print(f"     - Direction flips: {details['flips_total']}")
+                            print(f"     - Cells with flips: {details.get('cells_with_flips', 0)}")
+                            print(f"     - Window frames: {details.get('window_frames', 0)}")
+                            print(f"     - Cos threshold: {details.get('cos_threshold', 0):.2f}")
                     
                     if negative_indicators:
                         print(f"\n❌ NEGATIVE INDICATORS ({len(negative_indicators)}):")
@@ -1017,7 +1178,7 @@ if __name__ == "__main__":
         # Live stream mode (default)
         tracker = ObjectTracker(
             model="yolo26m.pt",
-            video_source="https://cdn3.wowza.com/1/T05XOENNUVZBQ0cr/STJqWUVl/hls/live/playlist.m3u8",
+            video_source="https://cdn3.wowza.com/1/c2FPYjV5NENIcC9C/Q29XaGtz/hls/live/playlist.m3u8",
             # Alternative stream:
             # video_source="https://cdn3.wowza.com/1/SkRQeFhmUk9sTDJG/dkovKzdK/hls/live/playlist.m3u8",
         )
