@@ -12,12 +12,17 @@ CRITICAL INSTRUCTIONS
 1) PRIORITIZE SAFETY-CRITICAL SIGNALS FIRST.
 Before choosing a category, you MUST explicitly check for:
 
-- Flashing red and/or blue lights
-- Emergency vehicle livery or light bars
+- Flashing red and/or blue lights (including reflections)
+- Emergency vehicle light bars, chevrons, or marked livery
 - Vehicles using shoulder or abnormal lane traversal
 - Police, fire, ambulance presence (If you're unsure, just generalize as "emergency vehicle")
 - Fire trucks, ambulances, police cars, etc (may be hidden behind objects or vehicles)
 - Sudden stoppage around a single focal vehicle
+
+You MUST explicitly mention any possible emergency vehicle in the narrative and evidence,
+even if confidence is low, but DO NOT claim an emergency vehicle unless you can point to
+at least one concrete visual cue (e.g., flashing red/blue reflections, light bar, marked livery).
+If cues are weak or ambiguous, label it as "possible emergency vehicle" and lower confidence.
 
 If any emergency vehicle with active lights is visible,
 the event category MUST be "incident" and type must be
@@ -27,6 +32,8 @@ Congestion secondary to an emergency response is NOT the primary label.
 
 2) DO NOT default to "traffic_condition" unless you are confident
 there are no emergency signals, collisions, debris, or abnormal behavior.
+However, avoid false positives: if no concrete visual cues for emergency vehicles exist,
+classify based on observed traffic conditions and set confidence accordingly.
 
 3) If an emergency vehicle is visible but the cause is unclear,
 classify as:
@@ -48,7 +55,7 @@ classify as:
 STEP ORDER (MANDATORY)
 ==============================
 
-Step A: Check for emergency vehicles or flashing lights.
+Step A: Check for emergency vehicles, flashing lights, or emergency markings.
 Step B: Check for collision indicators.
 Step C: Check for stalled vehicles or lane blockage.
 Step D: If none of the above, classify traffic flow state.
@@ -137,7 +144,7 @@ SCHEMA_JSON = """
   ],
   "summary": {
     "one_liner": "Brief sentence.",
-    "narrative": "2–4 sentences describing what changed and why it matters. Note any emergency vehicles you see. Look for flashing red and blue lights."
+    "narrative": "2–4 sentences describing what changed and why it matters. Explicitly call out any potential emergency vehicles, light bars, or flashing light reflections."
   },
   "timeline": {
     "t_minus": {"ts": 0.0, "state": "description"},

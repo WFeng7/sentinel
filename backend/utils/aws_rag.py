@@ -155,26 +155,29 @@ class S3RAGPipeline:
         """Make a decision using the RAG pipeline - compatible with existing DecisionEngine interface."""
         from app.rag.decision_engine import _record_rag_stats, get_rag_stats
         from app.rag.schemas import DecisionOutput, SupportingExcerpt
+        import os
         
         # Get context for decision
         query = ' '.join(decision_input.event_type_candidates + decision_input.signals)
-        context = self.get_context(query, max_chars=1200)
         
-        # For now, create a simple rule-based decision
-        # In production, this would use an LLM with the context
-        decision = {"action": "monitor", "priority": "medium"}
-        explanation = "Based on the traffic policies and incident data, this situation requires monitoring."
+        # Retrieve relevant documents
+        results = self.retrieve(query, top_k=5)
         
         # Create supporting excerpts from retrieved documents
         supporting_excerpts = []
-        results = self.retrieve(query, top_k=3)
+        context_text = ""
+        
         for i, result in enumerate(results):
             excerpt = SupportingExcerpt(
                 document_id=result['source'],
                 text=result['text'],
-                score=result['score']  # Fixed: use 'score' instead of 'relevance_score'
+                score=result['score']
             )
             supporting_excerpts.append(excerpt)
+            context_text += f"\nDocument {i+1} ({result['source']}):\n{result['text']}\n"
+        
+        # Generate LLM summary using OpenAI
+        decision, explanation = self._generate_llm_decision(query, context_text, decision_input)
         
         # Record stats
         _record_rag_stats(supporting_excerpts)
@@ -184,6 +187,128 @@ class S3RAGPipeline:
             explanation=explanation,
             supporting_excerpts=supporting_excerpts
         )
+    
+    def _generate_llm_decision(self, query, context_text, decision_input):
+        """Generate decision and explanation using OpenAI LLM with retrieved context."""
+        import os
+        import json
+        import re
+        
+        try:
+            from openai import OpenAI
+            
+            api_key = os.environ.get('OPENAI_API_KEY')
+            if not api_key:
+                # Fallback to default response
+                return {"action": "monitor", "priority": "medium"}, "OpenAI API key not configured. Based on the traffic policies and incident data, this situation requires monitoring."
+            
+            client = OpenAI(api_key=api_key)
+            
+            # Check if this is an unknown/no-event situation
+            event_types = decision_input.event_type_candidates or []
+            signals = decision_input.signals or []
+            
+            is_unknown = (not event_types or 'unknown' in event_types[0].lower()) and \
+                        (not signals or all('no significant' in s.lower() or 'unknown' in s.lower() for s in signals))
+            
+            if is_unknown:
+                return {
+                    "action": "monitor", 
+                    "priority": "low"
+                }, "No significant events detected in the camera feed. The traffic monitoring system shows normal conditions with no incidents requiring immediate attention. Continue routine monitoring."
+            
+            # Create the prompt for LLM
+            prompt = f"""You are a traffic incident analysis expert. Based on the retrieved policy documents and the incident information, provide a clear decision and explanation.
+
+INCIDENT INFORMATION:
+- Event Types: {', '.join(decision_input.event_type_candidates)}
+- Signals: {', '.join(decision_input.signals)}
+- Location: {decision_input.city}
+
+RETRIEVED POLICY DOCUMENTS:
+{context_text}
+
+TASK:
+1. Analyze the incident against the retrieved policies
+2. Provide a specific decision (action and priority level)
+3. Write a clear explanation that references the relevant policies
+
+RESPONSE FORMAT:
+Decision: {{"action": "specific_action", "priority": "high/medium/low"}}
+Explanation: [Clear explanation referencing specific policies and procedures]
+
+Example response:
+Decision: {{"action": "dispatch_emergency_services", "priority": "high"}}
+Explanation: Based on the traffic safety policies, this incident requires immediate emergency response due to [specific reason]. The NPFD Operations Manual (SAF 1.2) mandates apparatus response for such incidents, and the Strategic Highway Safety Plan requires high-priority intervention for similar scenarios.
+
+Provide your analysis:"""
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a traffic incident analysis expert specializing in emergency response protocols and traffic safety policies."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=500,
+                temperature=0.3
+            )
+            
+            response_text = response.choices[0].message.content.strip()
+            print(f"[AWS-RAG] LLM Response: {response_text[:200]}...")
+            
+            # Parse the response
+            decision = {"action": "monitor", "priority": "medium"}
+            explanation = response_text
+            
+            # Try to extract decision from response
+            if "Decision:" in response_text:
+                try:
+                    # Extract the JSON part after "Decision:"
+                    decision_start = response_text.find("Decision:") + len("Decision:")
+                    decision_end = response_text.find("Explanation:", decision_start)
+                    if decision_end == -1:
+                        decision_end = len(response_text)
+                    
+                    decision_part = response_text[decision_start:decision_end].strip()
+                    print(f"[AWS-RAG] Decision part: {decision_part}")
+                    
+                    # Try to parse as JSON
+                    import json
+                    decision = json.loads(decision_part)
+                    print(f"[AWS-RAG] Parsed decision: {decision}")
+                except Exception as e:
+                    print(f"[AWS-RAG] JSON parsing failed: {e}")
+                    # Try to extract action and priority manually
+                    if "action" in decision_part.lower() and "priority" in decision_part.lower():
+                        # Simple regex extraction
+                        import re
+                        action_match = re.search(r'action["\']?\s*[:=]\s*["\']?(\w+)["\']?', decision_part.lower())
+                        priority_match = re.search(r'priority["\']?\s*[:=]\s*["\']?(\w+)["\']?', decision_part.lower())
+                        
+                        if action_match:
+                            decision["action"] = action_match.group(1)
+                        if priority_match:
+                            decision["priority"] = priority_match.group(1)
+            
+            # Extract explanation
+            if "Explanation:" in response_text:
+                explanation_start = response_text.find("Explanation:") + len("Explanation:")
+                explanation = response_text[explanation_start:].strip()
+            else:
+                # If no "Explanation:" tag, use everything after the decision
+                if "Decision:" in response_text:
+                    decision_end = response_text.find("Explanation:", response_text.find("Decision:"))
+                    if decision_end != -1:
+                        explanation = response_text[decision_end + len("Explanation:"):].strip()
+                    else:
+                        explanation = response_text.split("Decision:")[1].strip()
+            
+            return decision, explanation
+            
+        except Exception as e:
+            print(f"[AWS-RAG] LLM generation failed: {e}")
+            # Fallback to default response
+            return {"action": "monitor", "priority": "medium"}, f"Based on the traffic policies and incident data, this situation requires monitoring. Error: {str(e)}"
 
 def create_aws_rag_pipeline(bucket_name: str = "sentinel-bucket-hackbrown"):
     """

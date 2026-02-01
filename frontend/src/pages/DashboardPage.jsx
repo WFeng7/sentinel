@@ -56,9 +56,19 @@ export default function DashboardPage() {
   const [vlmResult, setVlmResult] = useState(null)
   const [vlmLoading, setVlmLoading] = useState(false)
   const [vlmError, setVlmError] = useState('')
+  const [vlmLastRegenerated, setVlmLastRegenerated] = useState(null)
   const [ragResult, setRagResult] = useState(null)
   const [ragLoading, setRagLoading] = useState(false)
   const [ragError, setRagError] = useState('')
+
+  // Reset loading states on component mount (window reload)
+  useEffect(() => {
+    setVlmLoading(false)
+    setRagLoading(false)
+    setVlmError('')
+    setRagError('')
+    setExpandedLoading(false)
+  }, [])
   const [autoStartWorkers, setAutoStartWorkers] = useState(() => {
     try {
       const raw = localStorage.getItem('sentinel.autoStartWorkers.v1')
@@ -588,11 +598,70 @@ export default function DashboardPage() {
         streamUrl: stream.url
       })
       setVlmResult(data)
+      setVlmLastRegenerated(Date.now())
       await runRAGFromVLM(data)
     } catch (e) {
       setVlmError(e.message || 'VLM failed')
     } finally {
       setVlmLoading(false)
+    }
+  }
+
+  const regenerateVLM = async () => {
+    console.log('[Regenerate] Starting regeneration...')
+    if (!activeLocation || !streams) {
+      console.log('[Regenerate] No active location or streams')
+      return
+    }
+    
+    // Find the stream for the active location
+    const stream = streams.find(s => s.key === activeLocation)
+    if (!stream) {
+      console.log('[Regenerate] No stream found for active location')
+      return
+    }
+    
+    console.log('[Regenerate] Found stream:', stream.key)
+    
+    // Just call the same runVLM function but with a "regenerate" flag
+    const safeLabel = stream.label || `Camera ${stream.key}`
+    setVlmLoading(true)
+    setVlmError('')
+    setVlmResult(null)
+    setRagLoading(true)
+    setRagResult(null)
+    setRagError('')
+    
+    // Add timeout to prevent getting stuck
+    const timeoutId = setTimeout(() => {
+      setVlmLoading(false)
+      setRagLoading(false)
+      setVlmError('VLM regeneration timed out. Please try again.')
+    }, 15000) // 15 second timeout
+    
+    try {
+      console.log('[Regenerate] Calling fetchLocationVlm...')
+      // Use the same endpoint but with a flag for faster processing
+      const data = await fetchLocationVlm({
+        cameraId: stream.key,
+        label: safeLabel,
+        streamUrl: stream.url,
+        regenerate: true  // Add flag for faster processing
+      })
+      console.log('[Regenerate] Got VLM data:', data)
+      clearTimeout(timeoutId)
+      setVlmResult(data)
+      setVlmLastRegenerated(Date.now())
+      await runRAGFromVLM(data)
+    } catch (e) {
+      console.error('[Regenerate] Error:', e)
+      clearTimeout(timeoutId)
+      setVlmError(e.message || 'VLM regeneration failed')
+    } finally {
+      clearTimeout(timeoutId)
+      setVlmLoading(false)
+      setRagLoading(false)
+      console.log('[Regenerate] Finished regeneration')
     }
   }
 
@@ -1104,8 +1173,29 @@ export default function DashboardPage() {
             {activeLocation && (vlmLoading || vlmResult || vlmError) && (
               <div className="border border-white/10 bg-slate-900/60 p-4 text-xs text-slate-200">
                 <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400">
-                  <span>VLM Insight</span>
                   <div className="flex items-center gap-2">
+                    <span>VLM Insight</span>
+                    {vlmLastRegenerated && (
+                      <span className="text-[10px] text-slate-500">
+                        Regenerated {new Date(vlmLastRegenerated).toLocaleTimeString()}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className={`flex h-6 w-6 items-center justify-center border border-white/10 bg-slate-900/70 text-[11px] font-semibold transition ${
+                        vlmLoading 
+                          ? 'text-slate-400 cursor-not-allowed' 
+                          : 'text-slate-200 hover:bg-slate-800'
+                      }`}
+                      onClick={() => regenerateVLM()}
+                      disabled={vlmLoading}
+                      type="button"
+                      aria-label={vlmLoading ? "Regenerating VLM analysis..." : "Regenerate VLM analysis"}
+                      title={vlmLoading ? "Regenerating VLM analysis..." : "Regenerate VLM analysis"}
+                    >
+                      ↻
+                    </button>
                     <button
                       className="flex h-6 w-6 items-center justify-center border border-white/10 bg-slate-900/70 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-800"
                       onClick={() => toggleMinimized('vlm')}
@@ -1121,7 +1211,7 @@ export default function DashboardPage() {
                     {vlmLoading && (
                       <div className="mt-2 flex items-center gap-2 text-slate-300">
                         <div className="sentinel-spinner" style={{ '--spinner-size': '16px' }} />
-                        <span>Requesting VLM analysis…</span>
+                        <span>Regenerating VLM analysis with fresh frames…</span>
                       </div>
                     )}
                     {vlmError && !vlmLoading && <div className="mt-2 text-rose-300">{vlmError}</div>}

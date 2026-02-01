@@ -218,8 +218,6 @@ class DecisionEngine:
             signals=inp.signals or [],
             policy_text=policy_text,
         )
-        print("[RAG] Decision prompt:\n" + prompt)
-
         client = OpenAI(api_key=self._api_key)
         resp = client.chat.completions.create(
             model=self._llm_model,
@@ -325,8 +323,6 @@ class DecisionEngine:
             f"Signals: {', '.join(inp.signals) or 'none'}\n\n"
             f"Policy excerpts:\n{excerpts_text}\n"
         )
-        print("[RAG] Synthesis prompt:\n" + prompt)
-
         from openai import OpenAI
 
         client = OpenAI(api_key=self._api_key)

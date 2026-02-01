@@ -63,8 +63,14 @@ _camera_label_cache_ttl_s = 300.0
 def get_decision_engine() -> DecisionEngine:
     global _rag_engine
     if _rag_engine is None:
-        print("[RAG] Using local RAG pipeline")
-        _, _, _rag_engine = create_rag_pipeline()
+        # Check if AWS S3 RAG should be used
+        if os.environ.get("SENTINEL_S3_BUCKET") and os.environ.get("RAG_PROVIDER") == "aws":
+            print("[RAG] Using AWS S3 RAG pipeline")
+            from utils.aws_rag import create_aws_rag_pipeline
+            _, _, _rag_engine = create_aws_rag_pipeline()
+        else:
+            print("[RAG] Using local RAG pipeline")
+            _, _, _rag_engine = create_rag_pipeline()
     return _rag_engine
 
 _vlm_analyzer: EventAnalyzer | None = None
@@ -929,12 +935,13 @@ async def rag_decide(body: dict):
 async def vlm_location(body: dict):
     """
     VLM endpoint for control-panel location clicks.
-    Accepts: { "camera_id": "...", "label": "...", "stream_url": "..." }
+    Accepts: { "camera_id": "...", "label": "...", "stream_url": "...", "regenerate": true/false }
     Returns: VLM analysis of the current camera view.
     """
     camera_id = body.get("camera_id") or body.get("id") or "unknown"
     label = body.get("label") or ""
     stream_url = body.get("stream_url") or body.get("url") or ""
+    regenerate = body.get("regenerate", False)
     requested_at = datetime.now(timezone.utc).isoformat()
 
     # Check if VLM mode is enabled
@@ -956,18 +963,33 @@ async def vlm_location(body: dict):
         # Get VLM analyzer
         analyzer = get_vlm_analyzer()
         
-        # Create mock event context for location-based analysis
+        # Create event context
         from app.vlm import EventContext
         ctx = EventContext(
             event_id=f"loc_{camera_id}_{int(time.time())}",
             camera_id=camera_id,
             fps=30.0,
             window_seconds=10.0,
-            cv_notes=f"Manual analysis request for camera: {label or camera_id}"
+            cv_notes=f"{'Regenerated' if regenerate else 'Manual'} analysis request for camera: {label or camera_id}"
         )
         
-        # Perform VLM analysis (without keyframes for now)
-        result = analyzer.analyze(ctx)
+        # Sample frames if regenerate flag is set (use faster sampling)
+        keyframes = None
+        if regenerate and stream_url:
+            try:
+                # Use faster frame sampling for regeneration (0s, 2s, 4s instead of 0s, 5s, 10s)
+                keyframes = await sample_frames_from_hls(stream_url, times=[0, 2, 4])
+                if keyframes:
+                    ctx.cv_notes += " - Auto-sampled 3 frames (0s, 2s, 4s) from HLS stream."
+            except Exception as e:
+                print(f"[VLM] Frame sampling failed: {e}")
+                # Continue without frames if sampling fails
+        
+        # Perform VLM analysis
+        if keyframes:
+            result = analyzer.analyze(ctx, keyframes=keyframes)
+        else:
+            result = analyzer.analyze(ctx)
         
         # Convert to frontend-friendly format
         narrative = render_human_narrative(result)
