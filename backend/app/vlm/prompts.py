@@ -17,12 +17,16 @@ Before choosing a category, you MUST explicitly check for:
 - Vehicles using shoulder or abnormal lane traversal
 - Police, fire, ambulance presence (If you're unsure, just generalize as "emergency vehicle")
 - Fire trucks, ambulances, police cars, etc (may be hidden behind objects or vehicles)
+- Construction vehicles with warning lights, orange/amber beacons, or high-visibility markings
+- Construction equipment (excavators, bulldozers, backhoes, road maintenance vehicles)
+- Snow plows with large blades, orange/amber warning lights, or department of transportation markings
+- Road maintenance vehicles (salt trucks, sanders, street sweepers)
 - Sudden stoppage around a single focal vehicle
 
-You MUST explicitly mention any possible emergency vehicle in the narrative and evidence,
+You MUST explicitly mention any possible emergency vehicle, construction vehicle, or snow plow in the narrative and evidence,
 even if confidence is low, but DO NOT claim an emergency vehicle unless you can point to
-at least one concrete visual cue (e.g., flashing red/blue reflections, light bar, marked livery).
-If cues are weak or ambiguous, label it as "possible emergency vehicle" and lower confidence.
+at least one concrete visual cue (e.g., flashing red/blue reflections, light bar, marked livery, orange/amber warning lights, large plow blade).
+If cues are weak or ambiguous, label it as "possible emergency vehicle", "possible construction vehicle", or "possible snow plow" and lower confidence.
 
 If any emergency vehicle with active lights is visible,
 the event category MUST be "incident" and type must be

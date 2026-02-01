@@ -38,8 +38,18 @@ class S3PolicyRetriever:
         all_embeddings = []
         all_chunks = []
         all_sources = []
+        seen_sources = set()  # Track seen sources to deduplicate
         
         for doc_info in index_data['documents']:
+            source_file = doc_info.get('source', '')
+            source_key = source_file  # Use full path as key for deduplication
+            
+            # Skip if we've already processed this source
+            if source_key in seen_sources:
+                print(f"[S3-RAG] Skipping duplicate source: {source_file}")
+                continue
+                
+            seen_sources.add(source_key)
             embeddings_data = s3_manager.load_embeddings_data(doc_info['embeddings'])
             
             if embeddings_data:
@@ -209,13 +219,13 @@ class S3RAGPipeline:
             signals = decision_input.signals or []
             
             is_unknown = (not event_types or 'unknown' in event_types[0].lower()) and \
-                        (not signals or all('no significant' in s.lower() or 'unknown' in s.lower() for s in signals))
+                        (not signals or all('no significant' in s.lower() or 'unknown' in s.lower() or 'insufficient' in s.lower() for s in signals))
             
             if is_unknown:
                 return {
                     "action": "monitor", 
                     "priority": "low"
-                }, "No significant events detected in the camera feed. The traffic monitoring system shows normal conditions with no incidents requiring immediate attention. Continue routine monitoring."
+                }, "No significant events detected in the camera feed. The traffic monitoring system shows normal conditions with no incidents requiring immediate attention. Since there is insufficient visibility or no clear activity, there is no significant risk to public safety. Continue routine monitoring."
             
             # Create the prompt for LLM
             prompt = f"""You are a traffic incident analysis expert. Based on the retrieved policy documents and the incident information, provide a clear decision and explanation.

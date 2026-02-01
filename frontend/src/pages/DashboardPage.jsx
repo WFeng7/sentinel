@@ -665,6 +665,7 @@ export default function DashboardPage() {
   }
 
   const toggleMinimized = (section) => {
+    console.log(`[Toggle] ${section} section, current state: ${minimizedSections[section]}`)
     setMinimizedSections(prev => ({
       ...prev,
       [section]: !prev[section]
@@ -680,7 +681,9 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!mapContainerRef.current) return
     if (mapRef.current) return
+    if (minimizedSections.map) return // Don't initialize if map is minimized
 
+    console.log('[Map] Initializing map...')
     const mapInstance = L.map(mapContainerRef.current, {
       center: [41.823094, -71.413391],
       zoom: 20,
@@ -694,6 +697,7 @@ export default function DashboardPage() {
 
     markersLayerRef.current = L.layerGroup().addTo(mapInstance)
     mapRef.current = mapInstance
+    console.log('[Map] Map initialized successfully')
 
     return () => {
       try {
@@ -706,7 +710,7 @@ export default function DashboardPage() {
       markersLayerRef.current = null
       activeKeyRef.current = null
     }
-  }, [])
+  }, [minimizedSections.map]) // Re-initialize when map visibility changes
 
   // Incremental marker sync: build/update/remove without full rebuilds
   useEffect(() => {

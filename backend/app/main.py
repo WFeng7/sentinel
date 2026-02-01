@@ -86,7 +86,7 @@ def get_vlm_analyzer():
         from app.vlm.analyzer import EventAnalyzer as OpenAIEventAnalyzer
         _vlm_analyzer = OpenAIEventAnalyzer(
             api_key=openai_key,
-            model="gpt-4o-mini"
+            model="gpt-5.2"
         )
         print(f"[VLM] Initialized analyzer with OpenAI API key: {openai_key}")
     return _vlm_analyzer
