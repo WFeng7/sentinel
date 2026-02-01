@@ -122,9 +122,6 @@ def main():
     )
     args = p.parse_args()
 
-    if not args.video:
-        p.error("video path or URL required")
-
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         print("Error: OPENAI_API_KEY not set")

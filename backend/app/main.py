@@ -57,6 +57,49 @@ _camera_label_cache: dict[str, str] = {}
 _camera_label_cache_ts: float = 0.0
 _camera_label_cache_ttl_s = 300.0
 
+_SEVERITY_TO_SCORE = {"critical": 6, "high": 5, "medium": 4, "low": 3, "none": 1}
+
+
+def _append_vlm_incident(
+    camera_id: str,
+    label: str,
+    vlm_result,
+    rag_output=None,
+    timestamp: str | None = None,
+) -> None:
+    """Append a VLM/RAG analysis result to recent incidents."""
+    ts = timestamp or datetime.now(timezone.utc).isoformat()
+    event_id = f"vlm_{camera_id}_{int(time.time())}"
+    ev = getattr(vlm_result, "event", None)
+    severity_val = getattr(ev, "severity", None)
+    severity_str = severity_val.value if hasattr(severity_val, "value") else str(severity_val or "none")
+    score = _SEVERITY_TO_SCORE.get(severity_str.lower(), 2)
+    event_type = getattr(ev, "type", "unknown") or "unknown"
+    events = {event_type: True, severity_str: True}
+    if rag_output:
+        action = getattr(rag_output, "action", None) or (rag_output.get("action") if isinstance(rag_output, dict) else None)
+        if action:
+            events[str(action)] = True
+        priority = getattr(rag_output, "priority", None) or (rag_output.get("priority") if isinstance(rag_output, dict) else None)
+        if priority:
+            events[str(priority)] = True
+    summary = render_human_narrative(vlm_result)
+    rag_explanation = None
+    if rag_output:
+        rag_explanation = getattr(rag_output, "explanation", None) or (rag_output.get("explanation") if isinstance(rag_output, dict) else None)
+    incident = {
+        "id": event_id,
+        "camera_id": camera_id,
+        "label": label or camera_id,
+        "score": score,
+        "events": events,
+        "timestamp": ts,
+        "summary": summary,
+        "rag_explanation": rag_explanation,
+        "source": "vlm+rag" if rag_output else "vlm",
+    }
+    _incident_log.appendleft(incident)
+
 
 def get_decision_engine() -> DecisionEngine:
     global _rag_engine
@@ -209,6 +252,8 @@ async def add_incident(body: dict):
         "score": score,
         "events": events,
         "timestamp": timestamp,
+        "summary": body.get("summary"),
+        "rag_explanation": body.get("rag_explanation"),
     }
     _incident_log.appendleft(incident)
     return {"status": "ok", "incident": incident}
@@ -884,6 +929,16 @@ async def vlm_and_rag(body: dict):
     )
     engine = get_decision_engine()
     rag_output = engine.decide(inp)
+
+    # Populate recent incidents with VLM + RAG output
+    label = body.get("label") or camera_id
+    _append_vlm_incident(
+        camera_id,
+        label,
+        vlm_result,
+        rag_output=rag_output.to_dict(),
+        timestamp=datetime.now(timezone.utc).isoformat(),
+    )
 
     return {
         "vlm": {

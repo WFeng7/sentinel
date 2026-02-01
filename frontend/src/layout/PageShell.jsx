@@ -17,8 +17,7 @@ export const pageMeta = {
 }
 
 const navLinks = [
-  { label: 'Home', to: '/' },
-  { label: 'Docs', to: '/docs' }
+  { label: 'Home', to: '/' }
 ]
 
 function Header({ condensed, showBrand }) {
