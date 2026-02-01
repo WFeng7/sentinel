@@ -1202,7 +1202,9 @@ export default function DashboardPage() {
                     {ragResult && !ragLoading && (
                       <>
                         <div className="font-semibold mb-1">Decision</div>
-                        <div className="mb-2 text-slate-300">{ragResult.explanation || 'No decision'}</div>
+                        <div className="mb-2 text-slate-300">
+                          {ragResult.explanation || ragResult.supporting_excerpts?.[0]?.text || 'No decision'}
+                        </div>
                         {ragResult.action && (
                           <div className="text-slate-400">Action: {ragResult.action}</div>
                         )}
@@ -1251,7 +1253,6 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
-
             <div className="border border-white/10 bg-slate-900/60 p-4 text-xs text-slate-200">
               <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400">
                 <span>Session uptime</span>

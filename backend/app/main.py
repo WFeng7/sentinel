@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 
 import cv2
 import httpx
+import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,16 +25,33 @@ from app.rag import (
     create_rag_pipeline,
 )
 from app.rag.decision_engine import get_rag_stats
-from openai import OpenAI
-from dotenv import load_dotenv
+from utils.video_manager import video_manager
+from utils.aws_rag import create_aws_rag_pipeline
 
 # Load env from backend/.env and project root .env if present.
+from dotenv import load_dotenv
 _backend_env = os.path.join(os.path.dirname(__file__), "..", ".env")
 _root_env = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
 load_dotenv(dotenv_path=_backend_env, override=True)
 load_dotenv(dotenv_path=_root_env, override=False)
 
 app = FastAPI(title="Sentinel API")
+
+class _AccessLogFilter:
+    _suppressed_paths = {
+        "/health",
+        "/incidents",
+        "/fake-camera/2026-01-3015-25-54.mov",
+    }
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        return not any(path in message for path in self._suppressed_paths)
+
+logging.getLogger("uvicorn.access").addFilter(_AccessLogFilter())
 
 _rag_engine: DecisionEngine | None = None
 _incident_log: deque = deque(maxlen=100)
@@ -45,6 +63,7 @@ _camera_label_cache_ttl_s = 300.0
 def get_decision_engine() -> DecisionEngine:
     global _rag_engine
     if _rag_engine is None:
+        print("[RAG] Using local RAG pipeline")
         _, _, _rag_engine = create_rag_pipeline()
     return _rag_engine
 
@@ -53,10 +72,19 @@ _vlm_analyzer: EventAnalyzer | None = None
 def get_vlm_analyzer():
     global _vlm_analyzer
     if _vlm_analyzer is None:
-        _vlm_analyzer = EventAnalyzer(
-            api_key=os.environ.get("OPENAI_API_KEY"),
-            model="gpt-4o-mini"  # Use cheaper model
+        gemini_key = os.environ.get("GEMINI_API_KEY")
+        openai_key = os.environ.get("OPENAI_API_KEY")
+        print(f"[VLM] Available keys - Gemini: {'YES' if gemini_key else 'NO'}, OpenAI: {'YES' if openai_key else 'NO'}")
+        print(f"[VLM] Full OpenAI API key: {openai_key}")
+        print(f"[VLM] Full Gemini API key: {gemini_key}")
+        
+        # Use OpenAI instead of Gemini
+        from app.vlm.analyzer import EventAnalyzer as OpenAIEventAnalyzer
+        _vlm_analyzer = OpenAIEventAnalyzer(
+            api_key=openai_key,
+            model="gpt-4o-mini"
         )
+        print(f"[VLM] Initialized analyzer with OpenAI API key: {openai_key}")
     return _vlm_analyzer
 
 
@@ -186,11 +214,12 @@ async def add_incident(body: dict):
 async def fake_camera_file(filename: str):
     if filename != "2026-01-3015-25-54.mov":
         raise HTTPException(status_code=404, detail="Fake camera file not found")
-    repo_root = Path(__file__).resolve().parents[2]
-    file_path = repo_root / filename
-    if not file_path.exists() or not file_path.is_file():
+    
+    video_path = video_manager.get_fake_camera_path(filename)
+    if not video_path.exists() or not video_path.is_file():
         raise HTTPException(status_code=404, detail="Fake camera file not found")
-    return FileResponse(path=str(file_path), filename=file_path.name)
+    
+    return FileResponse(path=str(video_path), filename=video_path.name)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -234,12 +263,19 @@ async def motion_first_start(
     threshold = threshold or float(os.environ.get("SENTINEL_MULTI_THRESHOLD", "4.0"))
     window_frames = window_frames or int(os.environ.get("SENTINEL_MULTI_WINDOW_FRAMES", "50"))
     incident_rate_limit = incident_rate_limit or float(os.environ.get("SENTINEL_MULTI_RATE_LIMIT_S", "60.0"))
+    
+    print(f"[Workers] Raw enable_vlm: {enable_vlm}")
+    print(f"[Workers] Raw enable_rag: {enable_rag}")
+    
     if enable_vlm is None:
-        enable_vlm = _env_bool("SENTINEL_MULTI_ENABLE_VLM", False)
+        enable_vlm = _env_bool("SENTINEL_MULTI_ENABLE_VLM", True)
     if enable_rag is None:
-        enable_rag = _env_bool("SENTINEL_MULTI_ENABLE_RAG", False)
+        enable_rag = _env_bool("SENTINEL_MULTI_ENABLE_RAG", True)
     if enable_rag and not enable_vlm:
         enable_vlm = True
+
+    print(f"[Workers] Final enable_vlm: {enable_vlm}")
+    print(f"[Workers] Final enable_rag: {enable_rag}")
 
     if testincident is None:
         testincident = _env_bool("TESTINCIDENT", False)
@@ -252,9 +288,13 @@ async def motion_first_start(
         incident_rate_limit=incident_rate_limit,
         enable_vlm=enable_vlm,
         enable_rag=enable_rag,
+        sqs_queue_url=os.environ.get("SENTINEL_SQS_QUEUE_URL"),
     )
     if testincident:
         cmd.append("--test-incident")
+    
+    print(f"[Workers] Generated command: {cmd}")
+    
     repo_root = Path(__file__).resolve().parents[2]
     _multi_worker_proc = subprocess.Popen(cmd, cwd=str(repo_root), env=os.environ.copy())
     _multi_worker_started_at = time.time()
@@ -439,7 +479,6 @@ def set_cached_geo(label: str, geo: dict | None) -> None:
 
 def load_geo_llm_cache() -> None:
     if not os.path.exists(GEO_LLM_CACHE_FILE):
-        print(f"[geocode-llm] cache file not found at {GEO_LLM_CACHE_FILE}")
         return
     try:
         with open(GEO_LLM_CACHE_FILE, "r", encoding="utf-8") as handle:
@@ -455,7 +494,6 @@ def load_geo_llm_cache() -> None:
                 if not label:
                     continue
                 GEO_LLM_CACHE[label] = entry
-        print(f"[geocode-llm] loaded {len(GEO_LLM_CACHE)} cached entries")
     except OSError:
         return
 
@@ -465,9 +503,7 @@ def append_geo_llm_cache(entry: dict) -> None:
         os.makedirs(os.path.dirname(GEO_LLM_CACHE_FILE), exist_ok=True)
         with open(GEO_LLM_CACHE_FILE, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
-        print(f"[geocode-llm] wrote cache entry for label='{entry.get('label','')}'")
     except OSError:
-        print("[geocode-llm] failed to write cache file")
         return
 
 
@@ -479,14 +515,11 @@ async def geocode_with_llm(label: str) -> dict | None:
         load_dotenv(dotenv_path=_backend_env, override=True)
         load_dotenv(dotenv_path=_root_env, override=False)
     if not os.getenv("OPENAI_API_KEY"):
-        print("[geocode-llm] OPENAI_API_KEY missing; skipping LLM geocode")
         return None
     cached = GEO_LLM_CACHE.get(label)
     if cached:
         if cached.get("miss"):
-            print(f"[geocode-llm] cached miss label='{label}'")
             return None
-        print(f"[geocode-llm] cache hit label='{label}'")
         return cached.get("geo") or None
 
     client = OpenAI()
@@ -498,14 +531,12 @@ async def geocode_with_llm(label: str) -> dict | None:
         f"Label: {label}\n"
     )
     try:
-        print(f"[geocode-llm] calling OpenAI for label='{label}'")
         response = client.responses.create(
             model="gpt-4.1-nano",
             input=prompt,
             temperature=0.1,
         )
         text = response.output_text.strip()
-        print(f"[geocode-llm] OpenAI raw response: {text}")
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?", "", text).strip()
             text = re.sub(r"```$", "", text).strip()
@@ -518,8 +549,8 @@ async def geocode_with_llm(label: str) -> dict | None:
             GEO_LLM_CACHE[label] = entry
             append_geo_llm_cache(entry)
             return geo
-    except Exception as exc:
-        print(f"[geocode-llm] OpenAI error: {exc}")
+    except Exception:
+        pass
 
     entry = {"label": label, "geo": None, "miss": True, "ts": time.time()}
     GEO_LLM_CACHE[label] = entry
@@ -577,12 +608,9 @@ async def geocode_label(client: httpx.AsyncClient, label: str) -> dict | None:
 async def geocode_one(client, label):
     cached = get_cached_geo(label)
     if cached:
-        print(f"[geocode] cache hit: {label}")
         return cached
     if label in GEO_CACHE and GEO_CACHE[label].get("miss"):
-        print(f"[geocode] cached miss: {label}")
         return {}
-    print(f"[geocode] fetching: {label}")
     try:
         geo = await geocode_label(client, label)
     except httpx.HTTPError:
@@ -590,7 +618,6 @@ async def geocode_one(client, label):
     if not geo:
         geo = await geocode_with_llm(label)
     set_cached_geo(label, geo)
-    print(f"[geocode] result: {label} -> {geo}")
     return geo or {}
 
 async def enrich_cameras_with_geo(cameras: list[dict]) -> None:
@@ -626,12 +653,12 @@ def _multi_worker_cmd(
     incident_rate_limit: float,
     enable_vlm: bool,
     enable_rag: bool,
+    sqs_queue_url: str | None = None,
 ) -> list[str]:
-    repo_root = Path(__file__).resolve().parents[2]
-    script = repo_root / "experiments" / "motion_first_multi.py"
     cmd = [
         sys.executable,
-        str(script),
+        "-m",
+        "backend.app.motion_first.motion_first_multi",
         "--no-display",
         "--max-workers",
         str(max_workers),
@@ -648,6 +675,8 @@ def _multi_worker_cmd(
         cmd.append("--enable-vlm")
     if enable_rag:
         cmd.append("--enable-rag")
+    if sqs_queue_url:
+        cmd.extend(["--sqs-queue-url", sqs_queue_url])
     return cmd
 
 def load_cameras_from_file() -> list[dict] | None:
@@ -674,7 +703,6 @@ def save_cameras_to_file(cameras: list[dict]) -> None:
     try:
         with open(CAMERA_CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(cameras, f, indent=2)
-        print(f"[cache] Saved {len(cameras)} cameras to cache file")
     except Exception as e:
         print(f"[cache] Error saving cameras to file: {e}")
 
@@ -698,7 +726,6 @@ async def fetch_cameras(force_refresh: bool = False) -> list[dict]:
         await enrich_cameras_with_geo(cameras)
         return cameras
 
-    print("[fetch] Fetching cameras from RIDOT...")
     headers = {"User-Agent": "Sentinel/1.0 (+https://localhost)"}
 
     async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
@@ -726,8 +753,6 @@ async def fetch_cameras(force_refresh: bool = False) -> list[dict]:
         label = labels.get(cam_id, "")
         camera = {"id": cam_id, "label": label, "stream": stream}
         cameras.append(camera)
-        print(f"[camera] {camera['id']} | label='{camera['label']}' | stream={camera['stream']}")
-
     cameras.sort(key=lambda x: (x["label"] == "", x["label"].lower(), x["id"]))
     
     # Enrich with geo coordinates
@@ -738,7 +763,6 @@ async def fetch_cameras(force_refresh: bool = False) -> list[dict]:
     CAMERA_CACHE["cameras"] = cameras
     save_cameras_to_file(cameras)
     
-    print(f"[fetch] Successfully fetched and cached {len(cameras)} cameras")
     return cameras
 
 

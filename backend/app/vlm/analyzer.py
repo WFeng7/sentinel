@@ -83,6 +83,9 @@ class EventAnalyzer:
         self.model = model
         self._api_key = api_key
         self._base_url = base_url
+        print(f"[OpenAI VLM] Initialized with model: {model}")
+        print(f"[OpenAI VLM] Using API key: {self._api_key}")
+        print(f"[OpenAI VLM] Base URL: {self._base_url or 'default'}")
 
     def _get_client(self):
         try:

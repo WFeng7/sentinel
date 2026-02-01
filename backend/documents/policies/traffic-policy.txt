@@ -1,0 +1,16 @@
+TRAFFIC INCIDENT POLICY
+        
+        1. ACCIDENT RESPONSE
+        - All accidents must be reported within 5 minutes
+        - Emergency services contacted immediately for severe incidents
+        - Traffic control measures implemented within 10 minutes
+        
+        2. INCIDENT CLASSIFICATION
+        - Minor: Property damage only, no injuries
+        - Major: Injuries requiring medical attention
+        - Critical: Life-threatening injuries or fatalities
+        
+        3. PROTOCOL VIOLATIONS
+        - Running red lights: Immediate notification required
+        - Wrong way driving: High priority alert
+        - Stopped vehicle in lane: Monitor for 2 minutes, then alert
