@@ -2,5 +2,11 @@ opencv-python>=4.8.0
 ultralytics>=8.0.0
 supervision>=0.20.0
 numpy>=1.24.0
+<<<<<<< HEAD
+transformers>=4.30.0
+torch>=2.0.0
+Pillow>=9.0.0
+=======
 openai>=1.0.0
 python-dotenv>=1.0.0
+>>>>>>> ecb20344947738844fc03fb64f6e81461e518d85

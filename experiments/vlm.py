@@ -378,34 +378,7 @@ class EventAnalyzer:
         )
 
 
-# ---------------------------------------------------------------------------
-# CLI / quick test
-# ---------------------------------------------------------------------------
-
-
 def generate_event_id(camera_id: str = "cam00") -> str:
     return f"evt_{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_{camera_id}"
 
 
-if __name__ == "__main__":
-    import os
-
-    ctx = EventContext(
-        event_id=generate_event_id("cam07"),
-        camera_id="cam07",
-        fps=30.0,
-        window_seconds=10.0,
-        track_history=[
-            {"frame": 0, "tracks": [{"id": "t12", "cx": 400, "cy": 300, "speed": 45}]},
-            {"frame": 30, "tracks": [{"id": "t12", "cx": 380, "cy": 295, "speed": 12}]},
-        ],
-        bboxes_snapshot=[{"track_id": "t12", "box": [350, 250, 450, 350], "class": "car"}],
-        speeds_px_s={"t12": 12.0, "t18": 5.0},
-        overlap_pairs=[("t12", "t18", 0.35)],
-        cv_notes="Sustained bbox overlap 0.35 for 5 frames; t12 decel 45->12 px/s.",
-    )
-    analyzer = EventAnalyzer(api_key=os.environ.get("OPENAI_API_KEY"))
-    result = analyzer.analyze(ctx)
-    print(json.dumps(result, indent=2))
-    print("\n--- Human narrative ---\n")
-    print(render_human_narrative(result))

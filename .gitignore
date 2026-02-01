@@ -34,3 +34,5 @@ backend/.uvicorn/
 # OS
 .DS_Store
 Thumbs.db
+
+*.pt
