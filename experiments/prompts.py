@@ -12,18 +12,14 @@ CRITICAL INSTRUCTIONS
 1) PRIORITIZE SAFETY-CRITICAL SIGNALS FIRST.
 Before choosing a category, you MUST explicitly check for:
 
-- Flashing red and/or blue lights
-- Emergency vehicle livery or light bars
-- Vehicles using shoulder or abnormal lane traversal
-- Police, fire, ambulance presence (If you're unsure, just generalize as "emergency vehicle")
-- Fire trucks, ambulances, police cars, etc (may be hidden behind objects or vehicles)
+- Clear, *active* emergency light patterns (alternating red/blue or red/white strobes)
+- Visible emergency markings or light bar on the vehicle
+- Police, fire, ambulance presence (uniforms, vehicle markings, ladder truck, ambulance box)
+- Vehicles using shoulder or abnormal lane traversal *in combination with emergency markings/lights*
 - Sudden stoppage around a single focal vehicle
 
-If any emergency vehicle with active lights is visible,
-the event category MUST be "incident" and type must be
-"emergency_vehicle_response" — even if congestion is also present.
-
-Congestion secondary to an emergency response is NOT the primary label.
+Emergency-vehicle classification MUST be supported by at least TWO distinct visual signals from this list.
+If you cannot cite TWO signals, do NOT use emergency_vehicle_response.
 
 2) DO NOT default to "traffic_condition" unless you are confident
 there are no emergency signals, collisions, debris, or abnormal behavior.
@@ -32,6 +28,7 @@ there are no emergency signals, collisions, debris, or abnormal behavior.
 classify as:
   category: "incident"
   type: "emergency_vehicle_response"
+ONLY IF you can cite two distinct emergency signals.
 
 4) Only classify as "traffic_condition" if:
 - No flashing lights
@@ -39,10 +36,16 @@ classify as:
 - No emergency responders visible
 - No signs of collision or hazard
 
-5) If unsure whether lights are flashing:
-- Look for red/blue reflections on nearby vehicles
-- Look for asymmetric light intensity patterns
-- Look for shoulder lane usage by a marked vehicle
+5) DO NOT treat these as emergency evidence on their own:
+- Brake lights or turn signals
+- Reflections from signage, sun glare, wet roads, or brake lights
+- Red/blue vehicle paint, advertising, or bus LEDs
+- Construction vehicles, tow trucks, or roadside service vehicles without clear emergency lights
+
+6) If unsure whether lights are flashing:
+- Look for alternating red/blue or red/white strobe pattern over multiple frames
+- Look for a visible light bar or emergency markings
+- If still unsure, mark uncertainty and avoid emergency_vehicle_response
 
 ==============================
 STEP ORDER (MANDATORY)
