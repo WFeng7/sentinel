@@ -537,7 +537,7 @@ export default function DashboardPage() {
   }, [searchResults.length])
 
   return (
-    <section className="relative h-screen w-screen bg-slate-950" style={{ cursor: 'default' }}>
+    <section className="relative h-screen w-screen overflow-hidden bg-slate-950" style={{ cursor: 'default' }}>
       <style>{`
         iframe {
           scrollbar-width: none;
@@ -681,7 +681,7 @@ export default function DashboardPage() {
         )}
       </div>
 
-      <div className="flex h-full w-full">
+      <div className="flex h-full w-full overflow-hidden">
         <aside
           className={`relative h-full overflow-y-auto border-r border-white/10 bg-slate-950/80 text-slate-100 transition-all duration-300 ${
             controlPanelOpen ? 'w-1/3 opacity-100' : 'w-0 opacity-0 pointer-events-none'
@@ -969,9 +969,9 @@ export default function DashboardPage() {
           </div>
         </aside>
 
-        <div className={`relative h-full transition-all duration-300 ${controlPanelOpen ? 'w-2/3' : 'w-full'}`}>
+        <div className={`relative h-full overflow-hidden transition-all duration-300 ${controlPanelOpen ? 'w-2/3' : 'w-full'}`}>
           <div
-            className="grid h-full w-full gap-0"
+            className="grid h-full w-full gap-0 overflow-hidden"
             style={{
               gridTemplateColumns: `repeat(${cameraGridColumns}, minmax(0, 1fr))`,
               gridAutoRows: 'minmax(0, 1fr)'
@@ -985,7 +985,7 @@ export default function DashboardPage() {
 
               return (
                 <div
-                  className={`group relative border border-slate-600/60 transition-transform duration-350 ease-out ${
+                  className={`group relative overflow-hidden border border-slate-600/60 transition-transform duration-350 ease-out ${
                     isActiveTile ? '' : 'hover:z-20 hover:scale-[1.12]'
                   } ${dragIndex === index ? 'opacity-60' : ''} ${isHidden ? 'opacity-35' : ''}`}
                   draggable
