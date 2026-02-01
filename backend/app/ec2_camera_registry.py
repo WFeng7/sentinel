@@ -90,7 +90,19 @@ class EC2CameraRegistry:
             if not instance_ip:
                 return None
             
-            url = f"http://{instance_ip}:8000/camera-assignment"
+            # Use environment-aware URL construction
+            if self._is_running_on_ec2():
+                # If running on EC2, use private IP for internal communication
+                instance_ip = self._get_instance_private_ip(instance_id)
+                url = f"http://{instance_ip}:8000/camera-assignment"
+            else:
+                # If running locally (dev), use public IP
+                url = f"http://{instance_ip}:8000/camera-assignment"
+            
+            # Allow override via environment variable for production
+            ec2_service_port = os.environ.get('EC2_CAMERA_SERVICE_PORT', '8000')
+            ec2_service_protocol = os.environ.get('EC2_CAMERA_SERVICE_PROTOCOL', 'http')
+            url = f"{ec2_service_protocol}://{instance_ip}:{ec2_service_port}/camera-assignment"
             
             with httpx.Client(timeout=10) as client:
                 response = client.get(url)
@@ -117,6 +129,31 @@ class EC2CameraRegistry:
             pass
         
         return None
+    
+    def _get_instance_private_ip(self, instance_id: str) -> Optional[str]:
+        """Get private IP of instance."""
+        try:
+            response = self.ec2_client.describe_instances(
+                InstanceIds=[instance_id]
+            )
+            
+            for reservation in response['Reservations']:
+                for instance in reservation['Instances']:
+                    return instance.get('PrivateIpAddress')
+        
+        except Exception:
+            pass
+        
+        return None
+    
+    def _is_running_on_ec2(self) -> bool:
+        """Check if currently running on EC2 instance."""
+        try:
+            import urllib.request
+            urllib.request.urlopen('http://169.254.169.254/latest/meta-data/instance-id', timeout=2)
+            return True
+        except Exception:
+            return False
     
     def is_camera_on_ec2(self, camera_id: str) -> bool:
         """Check if a camera is running on EC2."""
