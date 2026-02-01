@@ -750,7 +750,6 @@ class ObjectTracker:
                 classes=[0, 2, 3, 5, 7],
                 max_det=500,
                 tracker="botsort.yaml",
-                device="mps",,
                 device="mps",
             )
             self.ann = Annotator(frame, line_width=2, font_size=1)
