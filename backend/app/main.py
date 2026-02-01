@@ -920,13 +920,14 @@ async def rag_decide(body: dict):
 async def vlm_location(body: dict):
     """
     VLM endpoint for control-panel location clicks.
-    Accepts: { "camera_id": "...", "label": "...", "stream_url": "...", "regenerate": true/false }
+    Accepts: { "camera_id": "...", "label": "...", "stream_url": "..." }
     Returns: VLM analysis of the current camera view.
+    
+    Automatically samples 3 frames (0s, 1s, 2s) from the video stream for analysis.
     """
     camera_id = body.get("camera_id") or body.get("id") or "unknown"
     label = body.get("label") or ""
     stream_url = body.get("stream_url") or body.get("url") or ""
-    regenerate = body.get("regenerate", False)
     requested_at = datetime.now(timezone.utc).isoformat()
 
     # Check if VLM mode is enabled
@@ -955,17 +956,20 @@ async def vlm_location(body: dict):
             camera_id=camera_id,
             fps=30.0,
             window_seconds=10.0,
-            cv_notes=f"{'Regenerated' if regenerate else 'Manual'} analysis request for camera: {label or camera_id}"
+            cv_notes=f"Manual analysis request for camera: {label or camera_id}"
         )
         
-        # Sample frames if regenerate flag is set (use faster sampling)
+        # Always sample frames from the video stream for VLM analysis
         keyframes = None
-        if regenerate and stream_url:
+        if stream_url:
             try:
-                # Use faster frame sampling for regeneration (0s, 2s, 4s instead of 0s, 5s, 10s)
-                keyframes = await sample_frames_from_hls(stream_url, times=[0, 2, 4])
+                # Sample 3 frames within 1-2 seconds (start, middle, end of 2-second window)
+                keyframes = await sample_frames_from_hls(stream_url, times=[0, 1, 2])
                 if keyframes:
-                    ctx.cv_notes += " - Auto-sampled 3 frames (0s, 2s, 4s) from HLS stream."
+                    ctx.cv_notes += " - Auto-sampled 3 frames (0s, 1s, 2s) from HLS stream."
+                    print(f"[VLM] Successfully sampled {len(keyframes)} frames from {stream_url}")
+                else:
+                    print(f"[VLM] No frames sampled from {stream_url}")
             except Exception as e:
                 print(f"[VLM] Frame sampling failed: {e}")
                 # Continue without frames if sampling fails
