@@ -35,4 +35,4 @@ backend/.uvicorn/
 .DS_Store
 Thumbs.db
 
-.pt
+*.pt
