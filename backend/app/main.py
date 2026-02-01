@@ -426,6 +426,7 @@ async def vlm_analyze(body: dict):
         result = analyzer.analyze_from_dict(context, keyframes=keyframes if keyframes else None)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # FastAPI will automatically serialize the Pydantic model to JSON
     return {
         "result": result,
         "narrative": render_human_narrative(result),

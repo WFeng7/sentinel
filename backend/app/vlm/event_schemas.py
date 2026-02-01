@@ -3,122 +3,146 @@ Structured schemas for VLM event output.
 Machine-readable for pipelines, RAG, and routing.
 """
 
-from typing import Any
+from enum import Enum
+from typing import Any, TypeVar
 
-# Type taxonomies (for validation and RAG)
-EVENT_CATEGORIES = ("incident", "traffic_condition", "non_event", "unknown")
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-INCIDENT_TYPES = (
-    "rear_end_collision",
-    "side_swipe_collision",
-    "pedestrian_conflict",
-    "near_miss",
-    "debris_strike",
-    "multi_vehicle_pileup",
-    "rollover",
-    "unknown_incident",
-)
+EnumType = TypeVar("EnumType", bound=Enum)
 
-TRAFFIC_CONDITION_TYPES = (
-    "congestion_stop_and_go",
-    "lane_blockage",
-    "stalled_vehicle",
-    "construction_zone",
-    "lane_closure_cones",
-    "unprotected_left_turn_queue",
-    "wrong_way_vehicle",
-    "aggressive_merging_pattern",
-    "unknown_traffic",
-)
+def normalize_enum(value: Any, enum_cls: type[EnumType], default: EnumType) -> EnumType:
+    """Normalize string values to enum members (case-insensitive, strips whitespace)."""
+    if isinstance(value, enum_cls):
+        return value
+    if isinstance(value, str):
+        normalized = value.lower().strip()
+        try:
+            return enum_cls(normalized)
+        except ValueError:
+            return default
+    return default
 
-NON_EVENT_TYPES = (
-    "shadow_false_positive",
-    "occlusion_false_positive",
-    "camera_artifact_glare",
-    "detector_id_switch",
-    "normal_braking",
-    "unknown_non_event",
-)
-
-ALL_EVENT_TYPES = INCIDENT_TYPES + TRAFFIC_CONDITION_TYPES + NON_EVENT_TYPES
-
-SEVERITY_LEVELS = ("none", "low", "medium", "high", "critical")
-
-IMPACT_LEVELS = ("none", "low", "medium", "high")
-
-ACTOR_ROLES = ("ego", "other")
-ACTOR_CLASSES = ("car", "truck", "bus", "motorcycle", "pedestrian", "cyclist", "unknown")
-RELATIVE_POSITIONS = (
-    "front_left",
-    "front",
-    "front_right",
-    "left",
-    "right",
-    "rear",
-    "unknown",
-)
-LANE_RELATIONS = ("same_lane", "adjacent_lane", "crossing", "shoulder", "unknown")
-
-# Action codes for playbooks
-ACTION_CODES = (
-    "DISPATCH_REVIEW",
-    "SAVE_EVIDENCE_BUNDLE",
-    "NOTIFY_FLEET_MANAGER",
-    "TRAFFIC_ALERT",
-    "LOG_EVENT",
-    "ESCALATE_INCIDENT",
-    "SUPPRESS_FALSE_POSITIVE",
-    "ANNOTATE_MAP",
-    "unknown",
-)
-
-PRIORITY_LEVELS = ("low", "medium", "high", "critical")
+class EventCategory(str, Enum):
+    incident = "incident"
+    traffic_condition = "traffic_condition"
+    non_event = "non_event"
+    unknown = "unknown"
 
 
-def validate_event_output(data: dict[str, Any]) -> dict[str, Any]:
-    """
-    Lightweight validation: ensure required fields exist and enums are valid.
-    Returns the data with any fixes; raises ValueError on critical issues.
-    """
-    required_top = ("event_id", "event", "actors", "summary", "evidence", "recommended_actions", "rag")
-    for k in required_top:
-        if k not in data:
-            raise ValueError(f"Missing required field: {k}")
+class Severity(str, Enum):
+    none = "none"
+    low = "low"
+    medium = "medium"
+    high = "high"
+    critical = "critical"
 
-    ev = data["event"]
-    if "category" not in ev:
-        ev["category"] = "unknown"
-    if ev["category"] not in EVENT_CATEGORIES:
-        ev["category"] = "unknown"
-    if "type" not in ev:
-        ev["type"] = "unknown_incident" if ev["category"] == "incident" else "unknown_non_event"
-    if "severity" not in ev:
-        ev["severity"] = "none"
-    if ev["severity"] not in SEVERITY_LEVELS:
-        ev["severity"] = "none"
-    if "confidence" not in ev:
-        ev["confidence"] = 0.0
-    ev["confidence"] = max(0.0, min(1.0, float(ev["confidence"])))
-    if "impact" not in ev:
-        ev["impact"] = {"safety_risk": "none", "traffic_disruption": "none"}
-    imp = ev["impact"]
-    if "safety_risk" not in imp:
-        imp["safety_risk"] = "none"
-    if "traffic_disruption" not in imp:
-        imp["traffic_disruption"] = "none"
 
-    if not isinstance(data["actors"], list):
-        data["actors"] = []
-    if not isinstance(data["evidence"], list):
-        data["evidence"] = []
-    if not isinstance(data["recommended_actions"], list):
-        data["recommended_actions"] = []
-    if "rag" in data and not isinstance(data["rag"], dict):
-        data["rag"] = {"tags": [], "queries": []}
-    rag = data["rag"]
-    if "tags" not in rag:
-        rag["tags"] = []
-    if "queries" not in rag:
-        rag["queries"] = []
+class ImpactLevel(str, Enum):
+    none = "none"
+    low = "low"
+    medium = "medium"
+    high = "high"
 
-    return data
+
+# ---------------------------------------------------------------------------
+# Event schemas
+# ---------------------------------------------------------------------------
+
+class VLMBase(BaseModel):
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+class EventImpact(VLMBase):
+    safety_risk: ImpactLevel = ImpactLevel.none
+    traffic_disruption: ImpactLevel = ImpactLevel.none
+
+    @field_validator("safety_risk", "traffic_disruption", mode="before")
+    @classmethod
+    def normalize_impact_level(cls, v: Any) -> ImpactLevel:
+        return normalize_enum(v, ImpactLevel, ImpactLevel.none)
+
+
+class EventInfo(VLMBase):
+    category: EventCategory = EventCategory.unknown
+    type: str = "unknown"
+    severity: Severity = Severity.none
+    confidence: float = Field(ge=0, le=1, default=0)
+    impact: EventImpact = Field(default_factory=EventImpact)
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize_category(cls, v: Any) -> EventCategory:
+        return normalize_enum(v, EventCategory, EventCategory.unknown)
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def normalize_severity(cls, v: Any) -> Severity:
+        return normalize_enum(v, Severity, Severity.none)
+
+    @field_validator("confidence", mode="before")
+    @classmethod
+    def normalize_confidence(cls, v: Any) -> float:
+        try:
+            f = float(v)
+            return max(0, min(1, f))
+        except (TypeError, ValueError):
+            return 0.0
+
+
+class RagInfo(VLMBase):
+    tags: list[str] = Field(default_factory=list)
+    queries: list[str] = Field(default_factory=list)
+
+
+class VLMEventOutput(VLMBase):
+    event_id: str = ""
+    event: EventInfo = Field(default_factory=EventInfo)
+    actors: list[dict[str, Any]] = Field(default_factory=list)
+    summary: dict[str, Any] = Field(default_factory=dict)
+    timeline: dict[str, Any] | None = None
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    uncertainty: dict[str, Any] | None = None
+    recommended_actions: list[dict[str, Any]] = Field(default_factory=list)
+    rag: RagInfo = Field(default_factory=RagInfo)
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("summary", "artifacts", "timeline", "uncertainty", mode="before")
+    @classmethod
+    def normalize_dict(cls, v: Any) -> dict | None:
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return v
+        return {}
+
+    @field_validator("event", mode="before")
+    @classmethod
+    def normalize_event(cls, v: Any) -> EventInfo | dict[str, Any]:
+        """Normalize event field: return empty dict if None, otherwise let Pydantic parse into EventInfo."""
+        if v is None:
+            return {}
+        if isinstance(v, EventInfo):
+            return v
+        if isinstance(v, dict):
+            return v
+        return {}
+
+    @field_validator("actors", "evidence", "recommended_actions", mode="before")
+    @classmethod
+    def normalize_list(cls, v: Any) -> list:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        return []
+
+    @field_validator("rag", mode="before")
+    @classmethod
+    def normalize_rag(cls, v: Any) -> RagInfo | dict[str, Any]:
+        """Normalize rag field: return empty dict if None, otherwise let Pydantic parse into RagInfo."""
+        if v is None:
+            return {}
+        if isinstance(v, RagInfo):
+            return v
+        if isinstance(v, dict):
+            return v
+        return {}
