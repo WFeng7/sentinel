@@ -22,17 +22,6 @@ def _load_cameras(path: Path) -> list[dict]:
     return data
 
 
-def _fake_camera(api_url: str) -> dict:
-    base = api_url.rstrip("/")
-    return {
-        "id": "fake-2026-01-3015-25-54",
-        "label": "Fake Camera (2026-01-3015-25-54.mov)",
-        "stream": f"{base}/fake-camera/2026-01-3015-25-54.mov",
-        "lat": 41.823094,
-        "lng": -71.413391,
-    }
-
-
 def _build_cmd(args, cam) -> list[str]:
     cmd = [
         sys.executable,
@@ -100,7 +89,6 @@ def main():
     parser.add_argument("--yolo", default="yolo26s.pt")
     parser.add_argument("--roi-y-frac", type=float, default=None)
     parser.add_argument("--dry-run", action="store_true", help="Print commands only")
-    parser.add_argument("--test-incident", action="store_true", help="Only run the fake camera")
     args = parser.parse_args()
 
     if args.enable_rag and not args.enable_vlm:
@@ -110,10 +98,6 @@ def main():
     cameras_path = Path(args.cameras)
     cameras = _load_cameras(cameras_path)
 
-    test_incident = args.test_incident or os.environ.get("TESTINCIDENT", "").lower() in {"1", "true", "yes", "on"}
-    if test_incident:
-        api_url = os.environ.get("SENTINEL_API_URL", "http://localhost:8000")
-        cameras = [_fake_camera(api_url)]
     if args.camera_ids:
         allowed = set(args.camera_ids)
         cameras = [c for c in cameras if c.get("id") in allowed]

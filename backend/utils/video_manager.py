@@ -54,39 +54,5 @@ class VideoManager:
                 uploaded_count += 1
         
         return uploaded_count
-    
-    def get_fake_camera_path(self, filename: str = "2026-01-3015-25-54.mov") -> Path:
-        """Get path to the fake camera video file."""
-        video_path = self.get_video_path(filename)
-        
-        # If video doesn't exist in new location, try to move it from old locations
-        if not video_path.exists():
-            self._move_fake_video(filename)
-        
-        return video_path
-    
-    def _move_fake_video(self, filename: str):
-        """Move fake video from old locations to new videos directory."""
-        # Check common old locations
-        old_locations = [
-            Path(__file__).parent.parent.parent / filename,  # Project root
-            Path(__file__).parent.parent / "data" / "videos" / filename,  # backend/data/videos
-            Path(__file__).parent.parent / "app" / "motion_first" / "test-video-processing" / filename,  # motion_first folder
-        ]
-        
-        for old_path in old_locations:
-            if old_path.exists():
-                try:
-                    # Move to new location
-                    new_path = self.get_video_path(filename)
-                    import shutil
-                    shutil.move(str(old_path), str(new_path))
-                    print(f"[Video] Moved fake video from {old_path} to {new_path}")
-                    return
-                except Exception as e:
-                    print(f"[Video] Failed to move {old_path}: {e}")
-        
-        print(f"[Video] Fake video {filename} not found in any old location")
-
 # Global video manager instance
 video_manager = VideoManager()

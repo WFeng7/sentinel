@@ -4,7 +4,6 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { fetchCameraStreams, fetchHealth, fetchLocationVlm, startMotionFirstWorkers, fetchIncidents } from '../services/cameras.js'
 import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
-import FakeCameraInjector from '../components/FakeCameraInjector.jsx'
 
 const DASHBOARD_LOADING_MESSAGES = [
   'Warming up camera streams',
@@ -855,7 +854,6 @@ export default function DashboardPage() {
   return (
     <section className="relative h-screen w-screen overflow-hidden bg-slate-950" style={{ cursor: 'default' }}>
       <audio ref={notifAudioRef} src="/notif.mp3" preload="auto" />
-      <FakeCameraInjector streams={streams} setStreams={setStreams} />
       <style>{`
         iframe {
           scrollbar-width: none;

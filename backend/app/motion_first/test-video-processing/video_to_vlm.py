@@ -112,8 +112,8 @@ def main():
     p.add_argument(
         "video",
         nargs="?",
-        default="cropped.mov",
-        help="Path to video (default: cropped.mov)",
+        default=None,
+        help="Path to video file or HLS stream URL (required)",
     )
     p.add_argument(
         "--no-rag",
@@ -121,6 +121,9 @@ def main():
         help="Skip RAG decision (VLM only)",
     )
     args = p.parse_args()
+
+    if not args.video:
+        p.error("video path or URL required")
 
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:

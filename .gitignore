@@ -36,3 +36,8 @@ backend/.uvicorn/
 Thumbs.db
 
 *.pt
+
+# Video files (use HLS streams or place locally)
+*.mov
+*.mp4
+*.avi

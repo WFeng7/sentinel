@@ -1134,12 +1134,13 @@ class MotionFirstTracker:
 # -----------------------------------------------------------------------------
 
 
+_DEFAULT_HLS = "https://cdn3.wowza.com/1/c2FPYjV5NENIcC9C/Q29XaGtz/hls/live/playlist.m3u8"
+
+
 def main():
     import argparse
-    _script_dir = os.path.dirname(os.path.abspath(__file__))
-    _default_video = os.path.join(_script_dir, "test-video-processing", "2026-01-30 15-25-54.mov")
     p = argparse.ArgumentParser(description="Motion-first incident detection")
-    p.add_argument("source", nargs="?", default=_default_video, help="Video file or stream URL")
+    p.add_argument("source", nargs="?", default=_DEFAULT_HLS, help="Video file or HLS stream URL")
     p.add_argument("--yolo", default="yolo26s.pt", help="YOLO model path")
     p.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD, help="Incident score threshold")
     p.add_argument("--no-display", action="store_true", help="Disable display window")

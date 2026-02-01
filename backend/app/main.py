@@ -25,7 +25,6 @@ from app.rag import (
     create_rag_pipeline,
 )
 from app.rag.decision_engine import get_rag_stats
-from utils.video_manager import video_manager
 from utils.aws_rag import create_aws_rag_pipeline
 
 # Load env from backend/.env and project root .env if present.
@@ -41,7 +40,6 @@ class _AccessLogFilter:
     _suppressed_paths = {
         "/health",
         "/incidents",
-        "/fake-camera/2026-01-3015-25-54.mov",
     }
 
     def filter(self, record):
@@ -214,19 +212,6 @@ async def add_incident(body: dict):
     }
     _incident_log.appendleft(incident)
     return {"status": "ok", "incident": incident}
-
-
-@app.get("/fake-camera/{filename}")
-async def fake_camera_file(filename: str):
-    if filename != "2026-01-3015-25-54.mov":
-        raise HTTPException(status_code=404, detail="Fake camera file not found")
-    
-    video_path = video_manager.get_fake_camera_path(filename)
-    if not video_path.exists() or not video_path.is_file():
-        raise HTTPException(status_code=404, detail="Fake camera file not found")
-    
-    return FileResponse(path=str(video_path), filename=video_path.name)
-
 
 def _env_bool(name: str, default: bool = False) -> bool:
     raw = os.environ.get(name)
