@@ -1,4 +1,6 @@
+import base64
 import html
+import os
 import re
 import time
 from urllib.parse import urljoin
@@ -6,7 +8,7 @@ from urllib.parse import urljoin
 import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-
+from app.vlm import EventAnalyzer, render_human_narrative
 from app.rag import (
     DecisionEngine,
     DecisionInput,
@@ -24,6 +26,15 @@ def get_decision_engine() -> DecisionEngine:
     if _rag_engine is None:
         _, _, _rag_engine = create_rag_pipeline()
     return _rag_engine
+
+_vlm_analyzer: EventAnalyzer | None = None
+
+def get_vlm_analyzer():
+    global _vlm_analyzer
+    if _vlm_analyzer is None:
+        _vlm_analyzer = EventAnalyzer(api_key=os.environ.get("OPENAI_API_KEY"))
+    return _vlm_analyzer
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -173,6 +184,37 @@ async def list_cameras(limit: int = 20, refresh: bool = False):
         "source": "dot.ri.gov",
     }
 
+
+# ---------------------------------------------------------------------------
+# VLM Event Analysis
+# ---------------------------------------------------------------------------
+
+@app.post("/vlm/analyze")
+async def vlm_analyze(body: dict):
+    """
+    VLM event analysis endpoint.
+    Expects: { "context": {...}, "keyframes": [{"ts": 0, "base64": "..."}, ...] }
+    Returns: structured event output + human narrative.
+    """
+    context = body.get("context") or {}
+    keyframes_raw = body.get("keyframes") or []
+    keyframes: list[tuple[float, bytes]] = []
+    for kf in keyframes_raw[:6]:
+        ts = float(kf.get("ts", 0))
+        b64 = kf.get("base64") or kf.get("data") or ""
+        if b64:
+            keyframes.append((ts, base64.standard_b64decode(b64)))
+    analyzer = get_vlm_analyzer()
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(status_code=503, detail="OPENAI_API_KEY not configured")
+    try:
+        result = analyzer.analyze_from_dict(context, keyframes=keyframes if keyframes else None)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "result": result,
+        "narrative": render_human_narrative(result),
+    }
 
 # ---------------------------------------------------------------------------
 # RAG Decision (Stage 3)

@@ -1,18 +1,18 @@
 """
-VLM stage: semantic incident classifier + narrator.
-Turns a suspicious CV event into structured output for pipelines and human dispatch.
+VLM analyzer: semantic incident classifier + narrator.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from event_schemas import validate_event_output
+from .event_schemas import validate_event_output
 
 # ---------------------------------------------------------------------------
 # Prompt
@@ -242,7 +242,6 @@ def _encode_frame_b64(frame_bytes: bytes) -> str:
 
 def _parse_json_from_response(text: str) -> dict[str, Any]:
     text = text.strip()
-    # Remove markdown code fences if present
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```\s*$", "", text)
@@ -283,11 +282,6 @@ def render_human_narrative(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# VLM Analyzer
-# ---------------------------------------------------------------------------
-
-
 class EventAnalyzer:
     """Analyzes flagged CV events via a vision-language model."""
 
@@ -295,7 +289,7 @@ class EventAnalyzer:
         self,
         *,
         api_key: str | None = None,
-        model: str = "gpt-5.2",
+        model: str = "gpt-5.1",
         base_url: str | None = None,
     ):
         self.model = model
@@ -307,7 +301,7 @@ class EventAnalyzer:
             from openai import OpenAI
         except ImportError:
             raise ImportError("openai package required. pip install openai")
-        return OpenAI(api_key=self._api_key or None, base_url=self._base_url)
+        return OpenAI(api_key=self._api_key, base_url=self._base_url)
 
     def analyze(
         self,
@@ -320,11 +314,13 @@ class EventAnalyzer:
         Run VLM analysis on the event context and optional keyframe images.
         Returns validated structured output.
         """
+        if not self._api_key:
+            raise ValueError("OPENAI_API_KEY required for VLM analysis")
         client = self._get_client()
         user_content: list[Any] = [{"type": "text", "text": _build_user_prompt(ctx)}]
 
         if keyframes:
-            for ts, img_bytes in keyframes[:6]:  # Limit to 6 images for token budget
+            for ts, img_bytes in keyframes[:6]:
                 user_content.append({
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{_encode_frame_b64(img_bytes)}"},
@@ -340,7 +336,6 @@ class EventAnalyzer:
         text = resp.choices[0].message.content
         data = _parse_json_from_response(text)
 
-        # Fill in artifacts if provided
         if "artifacts" not in data:
             data["artifacts"] = {}
         if clip_uri:
@@ -380,5 +375,3 @@ class EventAnalyzer:
 
 def generate_event_id(camera_id: str = "cam00") -> str:
     return f"evt_{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}_{camera_id}"
-
-
