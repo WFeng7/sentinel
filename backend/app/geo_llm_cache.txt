@@ -37,3 +37,7 @@
 {"label": "Rt 6 W @ Atwood", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911390.5988019}
 {"label": "Rt 6 W @ Glenbridge", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769911408.407943}
 {"label": "Rt 6 W DMS and Camera", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769911428.579489}
+{"label": "I-195 E @ Point St.", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769924749.206618}
+{"label": "I-95 N @ Lonsdale", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769924750.5152152}
+{"label": "I-95 S @ Rt 10", "geo": {"lat": 41.8231, "lng": -71.4188}, "miss": false, "ts": 1769924751.966163}
+{"label": "Tobey Street", "geo": {"lat": 41.8231, "lng": -71.4134}, "miss": false, "ts": 1769924752.9880252}

@@ -42,7 +42,10 @@ _vlm_analyzer: EventAnalyzer | None = None
 def get_vlm_analyzer():
     global _vlm_analyzer
     if _vlm_analyzer is None:
-        _vlm_analyzer = EventAnalyzer(api_key=os.environ.get("OPENAI_API_KEY"))
+        _vlm_analyzer = EventAnalyzer(
+            api_key=os.environ.get("OPENAI_API_KEY"),
+            model="gpt-4o-mini"  # Use cheaper model
+        )
     return _vlm_analyzer
 
 
@@ -301,6 +304,25 @@ async def geocode_label(client: httpx.AsyncClient, label: str) -> dict | None:
     return None
 
 
+async def geocode_one(client, label):
+    cached = get_cached_geo(label)
+    if cached:
+        print(f"[geocode] cache hit: {label}")
+        return cached
+    if label in GEO_CACHE and GEO_CACHE[label].get("miss"):
+        print(f"[geocode] cached miss: {label}")
+        return {}
+    print(f"[geocode] fetching: {label}")
+    try:
+        geo = await geocode_label(client, label)
+    except httpx.HTTPError:
+        geo = None
+    if not geo:
+        geo = await geocode_with_llm(label)
+    set_cached_geo(label, geo)
+    print(f"[geocode] result: {label} -> {geo}")
+    return geo or {}
+
 async def enrich_cameras_with_geo(cameras: list[dict]) -> None:
     missing = [cam for cam in cameras if cam.get("label")]
     if not missing:
@@ -308,48 +330,64 @@ async def enrich_cameras_with_geo(cameras: list[dict]) -> None:
 
     headers = {"User-Agent": "Sentinel/1.0 (+https://localhost)"}
     async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
-        last_request = 0.0
-        for cam in missing:
-            label = cam.get("label", "")
-            cached = get_cached_geo(label)
-            if cached:
-                cam.update(cached)
-                continue
-            if label in GEO_CACHE and GEO_CACHE[label].get("miss"):
-                continue
-            llm_geo = None
+        tasks = [geocode_one(client, cam["label"]) for cam in missing]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for cam, result in zip(missing, results):
+            if isinstance(result, dict) and result:
+                cam.update(result)
 
-            now = time.time()
-            wait_for = 1.0 - (now - last_request)
-            if wait_for > 0:
-                await asyncio.sleep(wait_for)
 
-            try:
-                geo = await geocode_label(client, label)
-            except httpx.HTTPError:
-                geo = None
+CAMERA_CACHE_FILE = os.path.join(os.path.dirname(__file__), "..", "cameras_cache.txt")
 
-            last_request = time.time()
-            if geo:
-                cam.update(geo)
-            else:
-                llm_geo = await geocode_with_llm(label)
-                if llm_geo:
-                    cam.update(llm_geo)
-                else:
-                    print(f"[geocode] miss label='{label}' id='{cam.get('id','')}'")
-            set_cached_geo(label, geo or llm_geo)
+def load_cameras_from_file() -> list[dict] | None:
+    """Load cameras from cache file if it exists and is recent."""
+    try:
+        if not os.path.exists(CAMERA_CACHE_FILE):
+            return None
+        
+        # Check if file is less than 1 hour old
+        file_age = time.time() - os.path.getmtime(CAMERA_CACHE_FILE)
+        if file_age > 3600:  # 1 hour TTL
+            return None
+        
+        with open(CAMERA_CACHE_FILE, 'r', encoding='utf-8') as f:
+            content = f.read()
+            if content.strip():
+                return json.loads(content)
+    except Exception as e:
+        print(f"[cache] Error loading cameras from file: {e}")
+    return None
 
+def save_cameras_to_file(cameras: list[dict]) -> None:
+    """Save cameras to cache file."""
+    try:
+        with open(CAMERA_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cameras, f, indent=2)
+        print(f"[cache] Saved {len(cameras)} cameras to cache file")
+    except Exception as e:
+        print(f"[cache] Error saving cameras to file: {e}")
 
 async def fetch_cameras(force_refresh: bool = False) -> list[dict]:
+    # Try file cache first
+    if not force_refresh:
+        cached_cameras = load_cameras_from_file()
+        if cached_cameras:
+            print(f"[cache] Loaded {len(cached_cameras)} cameras from file cache")
+            # Enrich with geo coordinates if missing
+            await enrich_cameras_with_geo(cached_cameras)
+            return cached_cameras
+    
     now = time.time()
     if (
         not force_refresh
         and CAMERA_CACHE["cameras"]
         and now - CAMERA_CACHE["timestamp"] < CAMERA_CACHE_TTL_SECONDS
     ):
-        return CAMERA_CACHE["cameras"]
+        cameras = CAMERA_CACHE["cameras"]
+        await enrich_cameras_with_geo(cameras)
+        return cameras
 
+    print("[fetch] Fetching cameras from RIDOT...")
     headers = {"User-Agent": "Sentinel/1.0 (+https://localhost)"}
 
     async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
@@ -365,21 +403,31 @@ async def fetch_cameras(force_refresh: bool = False) -> list[dict]:
             id_to_url.update(extract_id_to_m3u8_from_text(script))
 
         js_urls = extract_js_urls(page_html) or CAMERA_JS_FALLBACKS
-        for js_url in js_urls:
-            try:
-                js_text = await fetch_text(client, js_url)
-            except httpx.HTTPError:
+        js_tasks = [fetch_text(client, js_url) for js_url in js_urls]
+        js_results = await asyncio.gather(*js_tasks, return_exceptions=True)
+        for result in js_results:
+            if isinstance(result, Exception):
                 continue
-            id_to_url.update(extract_id_to_m3u8_from_text(js_text))
+            id_to_url.update(extract_id_to_m3u8_from_text(result))
 
     cameras = []
     for cam_id, stream in id_to_url.items():
         label = labels.get(cam_id, "")
-        cameras.append({"id": cam_id, "label": label, "stream": stream})
+        camera = {"id": cam_id, "label": label, "stream": stream}
+        cameras.append(camera)
+        print(f"[camera] {camera['id']} | label='{camera['label']}' | stream={camera['stream']}")
 
     cameras.sort(key=lambda x: (x["label"] == "", x["label"].lower(), x["id"]))
+    
+    # Enrich with geo coordinates
+    await enrich_cameras_with_geo(cameras)
+    
+    # Update both caches
     CAMERA_CACHE["timestamp"] = now
     CAMERA_CACHE["cameras"] = cameras
+    save_cameras_to_file(cameras)
+    
+    print(f"[fetch] Successfully fetched and cached {len(cameras)} cameras")
     return cameras
 
 
@@ -391,7 +439,6 @@ async def list_cameras(limit: int = 20, refresh: bool = False):
 
     cameras = await fetch_cameras(force_refresh=refresh)
     sliced = cameras[:limit]
-    await enrich_cameras_with_geo(sliced)
     return {
         "count": len(sliced),
         "cameras": sliced,
@@ -461,39 +508,73 @@ async def rag_decide(body: dict):
 @app.post("/vlm/location")
 async def vlm_location(body: dict):
     """
-    Placeholder VLM endpoint for control-panel location clicks.
+    VLM endpoint for control-panel location clicks.
     Accepts: { "camera_id": "...", "label": "...", "stream_url": "..." }
-    Returns: light-weight analysis summary (stub if VLM not wired yet).
+    Returns: VLM analysis of the current camera view.
     """
     camera_id = body.get("camera_id") or body.get("id") or "unknown"
     label = body.get("label") or ""
     stream_url = body.get("stream_url") or body.get("url") or ""
     requested_at = datetime.now(timezone.utc).isoformat()
 
-    # Toggleable hook for future VLM integration.
-    if os.getenv("SENTINEL_VLM_MODE", "stub").lower() != "stub":
+    # Check if VLM mode is enabled
+    if os.getenv("SENTINEL_VLM_MODE", "stub").lower() == "stub":
         return {
-            "status": "not_configured",
+            "status": "stub",
             "camera_id": camera_id,
             "label": label,
             "stream_url": stream_url,
-            "summary": "VLM mode is enabled but no analyzer is configured yet.",
+            "summary": "VLM not configured yet. This is a placeholder response.",
             "observations": [
-                "Attach a keyframe extraction pipeline to this endpoint.",
-                "Then call the vision model with the keyframe(s).",
+                "No keyframe payload was provided.",
+                "Wire a keyframe extractor and vision model to enrich this response.",
             ],
             "updated_at": requested_at,
         }
 
-    return {
-        "status": "stub",
-        "camera_id": camera_id,
-        "label": label,
-        "stream_url": stream_url,
-        "summary": "VLM not configured yet. This is a placeholder response.",
-        "observations": [
-            "No keyframe payload was provided.",
-            "Wire a keyframe extractor and vision model to enrich this response.",
-        ],
-        "updated_at": requested_at,
-    }
+    try:
+        # Get VLM analyzer
+        analyzer = get_vlm_analyzer()
+        
+        # Create mock event context for location-based analysis
+        from app.vlm import EventContext
+        ctx = EventContext(
+            event_id=f"loc_{camera_id}_{int(time.time())}",
+            camera_id=camera_id,
+            fps=30.0,
+            window_seconds=10.0,
+            cv_notes=f"Manual analysis request for camera: {label or camera_id}"
+        )
+        
+        # Perform VLM analysis (without keyframes for now)
+        result = analyzer.analyze(ctx)
+        
+        # Convert to frontend-friendly format
+        narrative = render_human_narrative(result)
+        
+        return {
+            "status": "success",
+            "camera_id": camera_id,
+            "label": label,
+            "stream_url": stream_url,
+            "summary": narrative,
+            "observations": [
+                f"Event type: {result.event.type}",
+                f"Severity: {result.event.severity.value}",
+                f"Confidence: {result.event.confidence:.2f}",
+                f"Actors detected: {len(result.actors)}",
+            ],
+            "detailed_analysis": result.model_dump(),
+            "updated_at": requested_at,
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "camera_id": camera_id,
+            "label": label,
+            "stream_url": stream_url,
+            "summary": f"VLM analysis failed: {str(e)}",
+            "observations": ["Error occurred during analysis"],
+            "updated_at": requested_at,
+        }

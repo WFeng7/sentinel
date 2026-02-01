@@ -26,6 +26,11 @@ body {
   font-weight: 400;
 }
 
+/* Remove border-radius from all buttons */
+button {
+  border-radius: 0 !important;
+}
+
 
 
 
