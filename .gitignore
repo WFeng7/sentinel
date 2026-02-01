@@ -41,3 +41,5 @@ Thumbs.db
 *.mov
 *.mp4
 *.avi
+# AWS SAM build files
+.aws_sam/

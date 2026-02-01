@@ -217,7 +217,11 @@ export default function DashboardPage() {
     if (!autoStartWorkers) return
     if (autoStartRef.current) return
     const isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
-    if (!isLocalhost) return
+    if (!isLocalhost) {
+      // Show local-only warning for non-localhost deployments
+      console.warn('Motion workers only available locally')
+      return
+    }
     autoStartRef.current = true
 
     const maybeNumber = (value) => (value ? Number(value) : undefined)
@@ -1058,7 +1062,9 @@ export default function DashboardPage() {
                       }}
                       type="checkbox"
                     />
-                    Auto-start motion workers (localhost)
+                    Auto-start motion workers {window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1' && (
+                      <span className="text-amber-400">(local only)</span>
+                    )}
                   </label>
                   <label className="flex items-center gap-2 text-xs text-slate-200">
                     <input

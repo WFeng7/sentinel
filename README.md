@@ -1,4 +1,4 @@
-# Sentinel Monorepo
+# Sentinel
 
 Minimal setup to run the React + Tailwind frontend and FastAPI backend together.
 
