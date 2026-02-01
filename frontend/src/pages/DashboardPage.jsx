@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { fetchCameraStreams, fetchHealth, fetchLocationVlm } from '../services/cameras.js'
+import MarkdownRenderer from '../components/MarkdownRenderer.jsx'
 
 const DASHBOARD_LOADING_MESSAGES = [
   'Warming up camera streams',
@@ -38,6 +39,14 @@ export default function DashboardPage() {
   const [vlmResult, setVlmResult] = useState(null)
   const [vlmLoading, setVlmLoading] = useState(false)
   const [vlmError, setVlmError] = useState('')
+  const [vlmRefreshInterval, setVlmRefreshInterval] = useState(null)
+  const [vlmCountdown, setVlmCountdown] = useState(60)
+  const [minimizedSections, setMinimizedSections] = useState({
+    filters: false,
+    incidents: false,
+    vlm: false,
+    map: false
+  })
   const [uptime, setUptime] = useState(100)
   const [uptimeSamples, setUptimeSamples] = useState([true])
   const [healthError, setHealthError] = useState('')
@@ -222,6 +231,15 @@ export default function DashboardPage() {
   }, [uptimeSamples])
 
   useEffect(() => {
+    return () => {
+      // Cleanup interval on unmount
+      if (vlmRefreshInterval) {
+        clearInterval(vlmRefreshInterval)
+      }
+    }
+  }, [vlmRefreshInterval])
+
+  useEffect(() => {
     if (!expandedKey) return
     const raf = requestAnimationFrame(() => setExpandedVisible(true))
     return () => cancelAnimationFrame(raf)
@@ -315,11 +333,26 @@ export default function DashboardPage() {
     setExpandedVisible(false)
   }
 
+  const toggleMinimized = (section) => {
+    setMinimizedSections(prev => ({
+      ...prev,
+      [section]: !prev[section]
+    }))
+  }
+
   const handleLocationClick = async (stream, label) => {
     setActiveLocation({ key: stream.key, label, url: stream.url })
     setVlmLoading(true)
     setVlmError('')
     setVlmResult(null)
+    setVlmCountdown(60)
+    
+    // Clear existing interval
+    if (vlmRefreshInterval) {
+      clearInterval(vlmRefreshInterval)
+      setVlmRefreshInterval(null)
+    }
+    
     try {
       const data = await fetchLocationVlm({
         cameraId: stream.key,
@@ -327,6 +360,28 @@ export default function DashboardPage() {
         streamUrl: stream.url
       })
       setVlmResult(data)
+      
+      // Set up auto-refresh every minute with countdown
+      const interval = setInterval(() => {
+        setVlmCountdown((prev) => {
+          if (prev <= 1) {
+            // Trigger refresh
+            fetchLocationVlm({
+              cameraId: stream.key,
+              label,
+              streamUrl: stream.url
+            }).then(refreshedData => {
+              setVlmResult(refreshedData)
+            }).catch(err => {
+              console.error('Auto-refresh failed:', err)
+            })
+            return 60 // Reset countdown
+          }
+          return prev - 1
+        })
+      }, 1000) // Every second
+      
+      setVlmRefreshInterval(interval)
     } catch (err) {
       setVlmError(err?.message ?? 'Failed to fetch VLM analysis')
     } finally {
@@ -587,6 +642,22 @@ export default function DashboardPage() {
         </div>
       )}
 
+      {!dashboardLoading && searchResults.length === 0 && !error && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-slate-950/70">
+          <div className="flex flex-col items-center gap-3 rounded-2xl border border-white/10 bg-slate-900/80 px-6 py-5 text-slate-100 shadow-2xl">
+            <div className="text-[11px] uppercase tracking-[0.3em] text-slate-400">No cameras found</div>
+            <div className="text-sm text-slate-200">Check your camera sources or refresh</div>
+            <button
+              className="mt-2 border border-white/10 bg-slate-800 px-4 py-2 text-xs text-slate-100 transition hover:bg-slate-700"
+              onClick={() => loadStreams(true)}
+              type="button"
+            >
+              Refresh Cameras
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="absolute bottom-4 left-4 z-50 flex items-center gap-2">
         <button
           className="flex h-12 w-12 items-center justify-center border border-white/10 bg-slate-900/80 text-xl text-slate-100 shadow-lg transition hover:bg-slate-800"
@@ -646,66 +717,135 @@ export default function DashboardPage() {
             <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
               <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400">
                 <span>Filters</span>
-                <button
-                  className="border border-white/10 bg-slate-900/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-100 transition hover:bg-slate-800"
-                  onClick={() => loadStreams(true)}
-                  type="button"
-                >
-                  Refresh URLs
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="border border-white/10 bg-slate-900/70 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-100 transition hover:bg-slate-800"
+                    onClick={() => loadStreams(true)}
+                    type="button"
+                  >
+                    Refresh URLs
+                  </button>
+                  <button
+                    className="flex h-5 w-5 items-center justify-center rounded-sm border border-white/10 bg-slate-900/70 text-[10px] font-semibold text-slate-200 transition hover:bg-slate-800"
+                    onClick={() => toggleMinimized('filters')}
+                    type="button"
+                    aria-label="Toggle filters"
+                  >
+                    {minimizedSections.filters ? '+' : '-'}
+                  </button>
+                </div>
               </div>
-              <label className="flex items-center gap-2 text-xs text-slate-200">
-                <input
-                  checked={showHidden}
-                  className="h-4 w-4 accent-slate-200"
-                  onChange={(event) => setShowHidden(event.target.checked)}
-                  type="checkbox"
-                />
-                Show hidden cameras
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-200">
-                <input
-                  checked={showLabels}
-                  className="h-4 w-4 accent-slate-200"
-                  onChange={(event) => setShowLabels(event.target.checked)}
-                  type="checkbox"
-                />
-                Show camera labels
-              </label>
-              <div className="space-y-2">
-                <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Search by label</span>
-                <input
-                  value={searchQuery}
-                  onChange={(event) => setSearchQuery(event.target.value)}
-                  placeholder="Filter cameras"
-                  className="w-full rounded-md border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-600"
-                  type="search"
-                />
-              </div>
+              
+              {!minimizedSections.filters && (
+                <div className="space-y-3">
+                  <label className="flex items-center gap-2 text-xs text-slate-200">
+                    <input
+                      checked={showHidden}
+                      className="h-4 w-4 accent-slate-200"
+                      onChange={(event) => setShowHidden(event.target.checked)}
+                      type="checkbox"
+                    />
+                    Show hidden cameras
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-200">
+                    <input
+                      checked={showLabels}
+                      className="h-4 w-4 accent-slate-200"
+                      onChange={(event) => setShowLabels(event.target.checked)}
+                      type="checkbox"
+                    />
+                    Show camera labels
+                  </label>
+                  <div className="space-y-2">
+                    <span className="text-xs uppercase tracking-[0.2em] text-slate-400">Search by label</span>
+                    <input
+                      value={searchQuery}
+                      onChange={(event) => setSearchQuery(event.target.value)}
+                      placeholder="Filter cameras"
+                      className="w-full rounded-md border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-600"
+                      type="search"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
-            <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
-              <button
-                className="flex w-full items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400"
-                onClick={() => setShowMap((prev) => !prev)}
-                type="button"
-              >
-                <span>Show map</span>
-                <span className="text-sm">{showMap ? '−' : '+'}</span>
-              </button>
-
-              {/* keep container mounted so map stays alive */}
-              <div
-                className={`rounded-md border border-white/10 bg-slate-950/80 transition-all duration-200 ${
-                  showMap ? 'opacity-100' : 'pointer-events-none opacity-0 h-0 overflow-hidden p-0 border-transparent'
-                }`}
-              >
-                <div
-                  ref={mapContainerRef}
-                  className="aspect-square overflow-hidden rounded-md border border-white/10"
-                  style={{ background: '#0b1020' }}
-                /> 
+            <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200 mb-4">
+              <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400">
+                <span>Recent Incidents</span>
+                <button
+                  className="flex h-5 w-5 items-center justify-center rounded-sm border border-white/10 bg-slate-900/70 text-[10px] font-semibold text-slate-200 transition hover:bg-slate-800"
+                  onClick={() => toggleMinimized('incidents')}
+                  type="button"
+                  aria-label="Toggle incidents"
+                >
+                  {minimizedSections.incidents ? '+' : '-'}
+                </button>
               </div>
+              
+              {!minimizedSections.incidents && (
+                <div className="space-y-2">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+                        <span className="flex items-center gap-1">
+                          <span className="h-2 w-2 bg-metadata-4" />
+                          Critical
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="h-2 w-2 bg-metadata-2" />
+                          Alert
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="h-2 w-2 bg-metadata-3" />
+                          Info
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex max-w-[220px] flex-col items-end gap-1 border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-slate-100">
+                      <span className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Session uptime</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-emerald-200">{uptime.toFixed(1)}%</span>
+                        <div className="flex items-center gap-1">
+                          {uptimeSamples.map((ok, index) => (
+                            <span
+                              key={`${index}-${ok ? 'up' : 'down'}`}
+                              className={`h-2 w-2 ${ok ? 'bg-emerald-400' : 'bg-rose-400'}`}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                      {healthError && (
+                        <span className="text-[10px] uppercase tracking-[0.16em] text-rose-300">{healthError}</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="space-y-2 text-xs text-slate-300">
+                    {incidents.map((incident) => (
+                      <button
+                        key={incident.id}
+                        className="flex w-full items-start justify-between gap-3 rounded-md border border-white/10 bg-slate-950/60 px-3 py-2 text-left transition hover:border-white/20 hover:bg-slate-900/70"
+                        onClick={() => setActiveIncident(incident)}
+                        type="button"
+                      >
+                        <div className="space-y-1">
+                          <span className="block text-sm font-semibold text-slate-100">{incident.title}</span>
+                          <span className="block text-[11px] uppercase tracking-[0.18em] text-slate-500">
+                            {incident.timestamp}
+                          </span>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 text-[11px] text-slate-400">
+                          <span className="flex items-center gap-2">
+                            <span className={`h-2 w-2 rounded-full ${incident.statusColor}`} />
+                            {incident.status}
+                          </span>
+                          <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{incident.relative}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {activeLocation && (vlmLoading || vlmResult || vlmError) && (
@@ -718,107 +858,111 @@ export default function DashboardPage() {
                     )}
                     <button
                       className="flex h-5 w-5 items-center justify-center rounded-sm border border-white/10 bg-slate-900/70 text-[10px] font-semibold text-slate-200 transition hover:bg-slate-800"
-                      onClick={() => {
-                        setActiveLocation(null)
-                        setVlmResult(null)
-                        setVlmError('')
-                        setVlmLoading(false)
-                      }}
+                      onClick={() => toggleMinimized('vlm')}
                       type="button"
-                      aria-label="Close VLM insight"
+                      aria-label="Toggle VLM insight"
                     >
-                      X
+                      {minimizedSections.vlm ? '+' : '-'}
                     </button>
                   </div>
                 </div>
-                {vlmLoading && (
-                  <div className="mt-2 flex items-center gap-2 text-slate-300">
-                    <div className="sentinel-spinner" style={{ '--spinner-size': '16px' }} />
-                    <span>Requesting live analysis…</span>
-                  </div>
-                )}
-                {vlmError && !vlmLoading && <div className="mt-2 text-rose-300">{vlmError}</div>}
-                {vlmResult && !vlmLoading && (
-                  <div className="mt-2 space-y-2 text-slate-200">
-                    <p className="text-sm text-slate-100">{vlmResult.summary}</p>
-                    {Array.isArray(vlmResult.observations) && vlmResult.observations.length > 0 && (
-                      <ul className="list-disc space-y-1 pl-4 text-[11px] text-slate-400">
-                        {vlmResult.observations.slice(0, 3).map((item, idx) => (
-                          <li key={`${item}-${idx}`}>{item}</li>
-                        ))}
-                      </ul>
-                    )}
-                    {vlmResult.updated_at && (
-                      <div className="text-[10px] uppercase tracking-[0.2em] text-slate-500">
-                        Updated {new Date(vlmResult.updated_at).toLocaleTimeString()}
+                
+                {!minimizedSections.vlm && (
+                  <>
+                    {vlmLoading && (
+                      <div className="mt-2 flex items-center gap-2 text-slate-300">
+                        <div className="sentinel-spinner" style={{ '--spinner-size': '16px' }} />
+                        <span>Requesting live analysis…</span>
                       </div>
                     )}
-                  </div>
+                    {vlmError && !vlmLoading && <div className="mt-2 text-rose-300">{vlmError}</div>}
+                    {vlmResult && !vlmLoading && (
+                      <div className="mt-2 space-y-3 text-slate-200">
+                        {/* Use markdown renderer for the main summary */}
+                        {vlmResult.summary && (
+                          <div className="space-y-2">
+                            <MarkdownRenderer 
+                              content={vlmResult.summary} 
+                              className="text-sm leading-relaxed"
+                            />
+                          </div>
+                        )}
+                        
+                        {/* Show parsed structured data - only show what's not already in summary */}
+                        {vlmResult.detailed_analysis && (
+                          <div className="space-y-2 border-t border-white/10 pt-2">
+                            {vlmResult.detailed_analysis.event && (
+                              <div className="flex flex-wrap items-center gap-2 text-xs">
+                                <span className="px-2 py-1 rounded bg-slate-800 text-slate-300 font-medium">
+                                  {vlmResult.detailed_analysis.event.type}
+                                </span>
+                                <span className={`px-2 py-1 rounded font-medium ${
+                                  vlmResult.detailed_analysis.event.severity === 'critical' ? 'bg-red-900/60 text-red-200' :
+                                  vlmResult.detailed_analysis.event.severity === 'high' ? 'bg-orange-900/60 text-orange-200' :
+                                  vlmResult.detailed_analysis.event.severity === 'medium' ? 'bg-yellow-900/60 text-yellow-200' :
+                                  vlmResult.detailed_analysis.event.severity === 'low' ? 'bg-blue-900/60 text-blue-200' :
+                                  'bg-slate-800 text-slate-400'
+                                }`}>
+                                  {vlmResult.detailed_analysis.event.severity}
+                                </span>
+                                <span className="text-slate-400">
+                                  {Math.round((vlmResult.detailed_analysis.event.confidence || 0) * 100)}% confidence
+                                </span>
+                              </div>
+                            )}
+                            
+                            {vlmResult.detailed_analysis.actors && vlmResult.detailed_analysis.actors.length > 0 && (
+                              <div className="text-xs text-slate-400">
+                                <span className="font-medium text-slate-300">Actors:</span> {vlmResult.detailed_analysis.actors.length} detected
+                                <div className="mt-1 flex flex-wrap gap-1">
+                                  {vlmResult.detailed_analysis.actors.slice(0, 4).map((actor, idx) => (
+                                    <span key={idx} className="px-2 py-0.5 bg-slate-800 rounded text-slate-300">
+                                      {actor.class || 'unknown'} {actor.track_id ? `(#${actor.track_id})` : ''}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        
+                        {/* Countdown timer instead of static timestamp */}
+                        <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.2em] text-slate-500 border-t border-white/10 pt-2">
+                          <span>Last updated {new Date(vlmResult.updated_at).toLocaleTimeString()}</span>
+                          <span>Querying in {vlmCountdown}s</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}
 
             <div className="space-y-3 rounded-md border border-white/10 bg-slate-900/60 p-4 text-sm text-slate-200">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <span className="text-[11px] uppercase tracking-[0.2em] text-slate-400">Recent Incidents</span>
-                  <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
-                    <span className="flex items-center gap-1">
-                      <span className="h-2 w-2 bg-metadata-4" />
-                      Critical
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <span className="h-2 w-2 bg-metadata-2" />
-                      Alert
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <span className="h-2 w-2 bg-metadata-3" />
-                      Info
-                    </span>
-                  </div>
-                </div>
-                <div className="flex max-w-[220px] flex-col items-end gap-1 border border-white/10 bg-slate-900/80 px-3 py-2 text-xs text-slate-100">
-                  <span className="text-[10px] uppercase tracking-[0.2em] text-slate-400">Session uptime</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-emerald-200">{uptime.toFixed(1)}%</span>
-                    <div className="flex items-center gap-1">
-                      {uptimeSamples.map((ok, index) => (
-                        <span
-                          key={`${index}-${ok ? 'up' : 'down'}`}
-                          className={`h-2 w-2 ${ok ? 'bg-emerald-400' : 'bg-rose-400'}`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                  {healthError && (
-                    <span className="text-[10px] uppercase tracking-[0.16em] text-rose-300">{healthError}</span>
-                  )}
-                </div>
+              <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.2em] text-slate-400">
+                <span>Show map</span>
+                <button
+                  className="flex h-5 w-5 items-center justify-center rounded-sm border border-white/10 bg-slate-900/70 text-[10px] font-semibold text-slate-200 transition hover:bg-slate-800"
+                  onClick={() => toggleMinimized('map')}
+                  type="button"
+                  aria-label="Toggle map"
+                >
+                  {minimizedSections.map ? '+' : '-'}
+                </button>
               </div>
-              <div className="space-y-2 text-xs text-slate-300">
-                {incidents.map((incident) => (
-                  <button
-                    key={incident.id}
-                    className="flex w-full items-start justify-between gap-3 rounded-md border border-white/10 bg-slate-950/60 px-3 py-2 text-left transition hover:border-white/20 hover:bg-slate-900/70"
-                    onClick={() => setActiveIncident(incident)}
-                    type="button"
-                  >
-                    <div className="space-y-1">
-                      <span className="block text-sm font-semibold text-slate-100">{incident.title}</span>
-                      <span className="block text-[11px] uppercase tracking-[0.18em] text-slate-500">
-                        {incident.timestamp}
-                      </span>
-                    </div>
-                    <div className="flex flex-col items-end gap-1 text-[11px] text-slate-400">
-                      <span className="flex items-center gap-2">
-                        <span className={`h-2 w-2 rounded-full ${incident.statusColor}`} />
-                        {incident.status}
-                      </span>
-                      <span className="text-[10px] uppercase tracking-[0.2em] text-slate-500">{incident.relative}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
+
+              {/* keep container mounted so map stays alive */}
+              {!minimizedSections.map && (
+                <div
+                  className="rounded-md border border-white/10 bg-slate-950/80 transition-all duration-200"
+                >
+                  <div
+                    ref={mapContainerRef}
+                    className="aspect-square overflow-hidden rounded-md border border-white/10"
+                    style={{ background: '#0b1020' }}
+                  /> 
+                </div>
+              )}
             </div>
           </div>
         </aside>
@@ -876,7 +1020,7 @@ export default function DashboardPage() {
                     type="button"
                   />
                   <button
-                    className="absolute left-2 top-2 z-20 hidden h-7 w-7 items-center justify-center rounded-sm border border-white/20 bg-slate-900/80 text-xs font-semibold text-slate-100 opacity-0 transition group-hover:flex group-hover:opacity-100"
+                    className="absolute left-2 top-2 z-20 hidden h-8 w-8 items-center justify-center border border-white/20 bg-slate-900/80 text-xs font-semibold text-slate-100 opacity-0 transition group-hover:flex group-hover:opacity-100"
                     onClick={() => {
                       setHiddenKeys((prev) => {
                         const next = new Set(prev)

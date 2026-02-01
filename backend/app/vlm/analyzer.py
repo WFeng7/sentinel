@@ -51,17 +51,24 @@ def render_human_narrative(data: VLMEventOutput) -> str:
     one_liner = summary.get("one_liner", "(no summary)")
     narrative = summary.get("narrative", "")
 
+    # Handle involved actors - show "None" if no actors
+    involved_text = "None identified"
+    if actors:
+        actor_list = []
+        for a in actors[:5]:
+            actor_desc = f"Vehicle {a.get('track_id', '?')} ({a.get('class', '?')}, {a.get('lane_relation', '?')})"
+            actor_list.append(actor_desc)
+        if actor_list:
+            involved_text = "; ".join(actor_list)
+
     lines = [
         f"**Incident:** {typ} (confidence {conf:.2f}), severity: {sev}",
         "",
-        "**Involved:** " + "; ".join(
-            f"Vehicle {a.get('track_id', '?')} ({a.get('class', '?')}, {a.get('lane_relation', '?')})"
-            for a in actors[:5]
-        ) or "None identified",
+        f"**Involved:** {involved_text}",
         "",
-        "**What happened:** " + one_liner,
+        f"**What happened:** {one_liner}",
         "",
-        "**Why we think so:** " + narrative,
+        f"**Why we think so:** {narrative}",
         "",
         "**Next steps:** " + ", ".join(
             f"{a.get('code', '?')} ({a.get('priority', '?')})"
