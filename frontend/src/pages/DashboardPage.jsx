@@ -606,64 +606,6 @@ export default function DashboardPage() {
     }
   }
 
-  const regenerateVLM = async () => {
-    console.log('[Regenerate] Starting regeneration...')
-    if (!activeLocation || !streams) {
-      console.log('[Regenerate] No active location or streams')
-      return
-    }
-    
-    // Find the stream for the active location
-    const stream = streams.find(s => s.key === activeLocation)
-    if (!stream) {
-      console.log('[Regenerate] No stream found for active location')
-      return
-    }
-    
-    console.log('[Regenerate] Found stream:', stream.key)
-    
-    // Just call the same runVLM function but with a "regenerate" flag
-    const safeLabel = stream.label || `Camera ${stream.key}`
-    setVlmLoading(true)
-    setVlmError('')
-    setVlmResult(null)
-    setRagLoading(true)
-    setRagResult(null)
-    setRagError('')
-    
-    // Add timeout to prevent getting stuck
-    const timeoutId = setTimeout(() => {
-      setVlmLoading(false)
-      setRagLoading(false)
-      setVlmError('VLM regeneration timed out. Please try again.')
-    }, 15000) // 15 second timeout
-    
-    try {
-      console.log('[Regenerate] Calling fetchLocationVlm...')
-      // Use the same endpoint but with a flag for faster processing
-      const data = await fetchLocationVlm({
-        cameraId: stream.key,
-        label: safeLabel,
-        streamUrl: stream.url,
-        regenerate: true  // Add flag for faster processing
-      })
-      console.log('[Regenerate] Got VLM data:', data)
-      clearTimeout(timeoutId)
-      setVlmResult(data)
-      setVlmLastRegenerated(Date.now())
-      await runRAGFromVLM(data)
-    } catch (e) {
-      console.error('[Regenerate] Error:', e)
-      clearTimeout(timeoutId)
-      setVlmError(e.message || 'VLM regeneration failed')
-    } finally {
-      clearTimeout(timeoutId)
-      setVlmLoading(false)
-      setRagLoading(false)
-      console.log('[Regenerate] Finished regeneration')
-    }
-  }
-
   const toggleMinimized = (section) => {
     setMinimizedSections(prev => ({
       ...prev,
@@ -1180,20 +1122,6 @@ export default function DashboardPage() {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      className={`flex h-6 w-6 items-center justify-center border border-white/10 bg-slate-900/70 text-[11px] font-semibold transition ${
-                        vlmLoading 
-                          ? 'text-slate-400 cursor-not-allowed' 
-                          : 'text-slate-200 hover:bg-slate-800'
-                      }`}
-                      onClick={() => regenerateVLM()}
-                      disabled={vlmLoading}
-                      type="button"
-                      aria-label={vlmLoading ? "Regenerating VLM analysis..." : "Regenerate VLM analysis"}
-                      title={vlmLoading ? "Regenerating VLM analysis..." : "Regenerate VLM analysis"}
-                    >
-                      ↻
-                    </button>
                     <button
                       className="flex h-6 w-6 items-center justify-center border border-white/10 bg-slate-900/70 text-[11px] font-semibold text-slate-200 transition hover:bg-slate-800"
                       onClick={() => toggleMinimized('vlm')}
