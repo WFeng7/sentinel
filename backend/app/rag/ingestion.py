@@ -5,13 +5,12 @@ Fetches from PolicyProvider, ingests into vector store.
 
 from .providers import PolicyProvider
 from .schemas import PolicyDocument
-from .vector_store import InMemoryVectorStore
 
 
 class DocumentIngestionPipeline:
     """Ingests documents from a PolicyProvider into a vector store."""
 
-    def __init__(self, provider: PolicyProvider, vector_store: InMemoryVectorStore):
+    def __init__(self, provider: PolicyProvider, vector_store):
         self._provider = provider
         self._store = vector_store
 

@@ -1,16 +1,25 @@
 """
 Extract 3 keyframes (first, middle, last) from a video and send to VLM.
-No tracking/velocity context - images only.
+Then run RAG decision locally (experiments/rag/data).
+All local - no backend server needed.
 """
 
 import argparse
 import json
 import os
 import sys
+from pathlib import Path
 
-# Allow importing vlm from parent
+# Allow importing vlm and rag from experiments
 _script_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(_script_dir))
+_experiments = os.path.dirname(_script_dir)
+sys.path.insert(0, _experiments)
+
+# experiments/rag imports app.utils; add backend so app resolves
+_repo_root = Path(_script_dir).resolve().parent.parent.parent
+_backend = _repo_root / "backend"
+if _backend.exists():
+    sys.path.insert(0, str(_backend))
 
 # Load .env from script dir or parent
 try:
@@ -68,15 +77,54 @@ def extract_keyframes(video_path: str, jpeg_quality: int = 85) -> list[tuple[flo
     return keyframes
 
 
+def vlm_to_rag_input(result) -> dict:
+    """Build RAG /rag/decide request from VLM output."""
+    ev = getattr(result, "event", None)
+    rag_info = getattr(result, "rag", None)
+    evidence = getattr(result, "evidence", None) or []
+
+    event_type_candidates = []
+    if ev:
+        if getattr(ev, "type", None):
+            event_type_candidates.append(str(ev.type))
+        if getattr(ev, "category", None):
+            cat = ev.category
+            event_type_candidates.append(cat.value if hasattr(cat, "value") else str(cat))
+    tags = getattr(rag_info, "tags", []) if rag_info else []
+    event_type_candidates.extend(tags[:5])
+
+    signals = []
+    for e in evidence:
+        if isinstance(e, dict):
+            if e.get("claim"):
+                signals.append(str(e["claim"])[:200])
+            signals.extend(e.get("signals", [])[:3])
+        elif hasattr(e, "claim"):
+            signals.append(str(e.claim)[:200])
+    queries = getattr(rag_info, "queries", []) if rag_info else []
+    signals.extend(queries[:3])
+
+    return {
+        "event_type_candidates": event_type_candidates,
+        "signals": signals[:10],
+        "city": "Providence",
+    }
+
+
 def main():
     p = argparse.ArgumentParser(
-        description="Extract 3 keyframes from video and run VLM analysis."
+        description="Extract 3 keyframes from video, run VLM analysis, then RAG decision."
     )
     p.add_argument(
         "video",
         nargs="?",
         default="cropped.mov",
         help="Path to video (default: cropped.mov)",
+    )
+    p.add_argument(
+        "--no-rag",
+        action="store_true",
+        help="Skip RAG decision (VLM only)",
     )
     args = p.parse_args()
 
@@ -111,6 +159,21 @@ def main():
     print(json.dumps(result.model_dump(mode="json"), indent=2))
     print("\n--- Human Narrative ---")
     print(render_human_narrative(result))
+
+    if not args.no_rag:
+        from rag import create_rag_pipeline, DecisionInput
+
+        rag_data_dir = Path(_script_dir).resolve().parent / "rag" / "data"
+        _, _, engine = create_rag_pipeline(
+            provider_type="local",
+            data_dir=rag_data_dir if rag_data_dir.exists() else None,
+        )
+        inp = DecisionInput(**vlm_to_rag_input(result))
+        rag_out = engine.decide(inp)
+        print("\n--- RAG Input (from VLM) ---")
+        print(json.dumps(inp.model_dump(), indent=2))
+        print("\n--- RAG Decision (local, experiments/rag/data) ---")
+        print(json.dumps(rag_out.to_dict(), indent=2))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Test Frame Capture</title>
+</head>
+<body>
+  <h1>Test Frame Capture for VLM+RAG</h1>
+  <video id="video" controls width="640" height="360">
+    <source src="https://cdn3.wowza.com/1/eUp6WUZ2Q0NiTnNh/K2VvaWJo/hls/live/playlist.m3u8" type="application/x-mpegURL">
+  </video>
+  <br><br>
+  <button onclick="captureFrames()">Capture 0s, 5s, 10s</button>
+  <pre id="output"></pre>
+
+  <script>
+    async function captureFrameAt(video, timeSec) {
+      return new Promise((resolve) => {
+        const canvas = document.createElement('canvas')
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
+        const ctx = canvas.getContext('2d')
+        video.currentTime = timeSec
+        video.onseeked = () => {
+          ctx.drawImage(video, 0, 0)
+          canvas.toBlob((blob) => {
+            const reader = new FileReader()
+            reader.onloadend = () => resolve({ ts: timeSec, base64: reader.result.split(',')[1] })
+            reader.readAsDataURL(blob)
+          }, 'image/jpeg', 0.85)
+        }
+      })
+    }
+
+    async function captureFrames() {
+      const video = document.getElementById('video')
+      const out = document.getElementById('output')
+      try {
+        const frames = await Promise.all([
+          captureFrameAt(video, 0),
+          captureFrameAt(video, 5),
+          captureFrameAt(video, 10)
+        ])
+        out.textContent = JSON.stringify({ frames }, null, 2)
+        console.log('Captured frames:', frames)
+      } catch (e) {
+        out.textContent = 'Error: ' + e
+      }
+    }
+  </script>
+</body>
+</html>

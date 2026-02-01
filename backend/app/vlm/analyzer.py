@@ -5,15 +5,15 @@ VLM analyzer: semantic incident classifier + narrator.
 
 from __future__ import annotations
 
-import json
 import os
-import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from app.utils import parse_json_from_llm
 from .event_schemas import VLMEventOutput
-from .prompts import SYSTEM_PROMPT, SCHEMA_JSON, build_user_prompt, encode_frame_b64
+from .prompts import SYSTEM_PROMPT, SCHEMA_JSON, build_user_prompt
+from app.utils import encode_frame_b64
 
 # from stage 1
 @dataclass
@@ -30,14 +30,6 @@ class EventContext:
     cv_notes: str = ""
 
 
-def _parse_json_from_response(text: str) -> dict[str, Any]:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```\s*$", "", text)
-    return json.loads(text)
-
-
 def render_human_narrative(data: VLMEventOutput) -> str:
     """Produce a crisp dispatch note from the structured output."""
     ev = data.event
@@ -51,17 +43,24 @@ def render_human_narrative(data: VLMEventOutput) -> str:
     one_liner = summary.get("one_liner", "(no summary)")
     narrative = summary.get("narrative", "")
 
+    # Handle involved actors - show "None" if no actors
+    involved_text = "None identified"
+    if actors:
+        actor_list = []
+        for a in actors[:5]:
+            actor_desc = f"Vehicle {a.get('track_id', '?')} ({a.get('class', '?')}, {a.get('lane_relation', '?')})"
+            actor_list.append(actor_desc)
+        if actor_list:
+            involved_text = "; ".join(actor_list)
+
     lines = [
         f"**Incident:** {typ} (confidence {conf:.2f}), severity: {sev}",
         "",
-        "**Involved:** " + "; ".join(
-            f"Vehicle {a.get('track_id', '?')} ({a.get('class', '?')}, {a.get('lane_relation', '?')})"
-            for a in actors[:5]
-        ) or "None identified",
+        f"**Involved:** {involved_text}",
         "",
-        "**What happened:** " + one_liner,
+        f"**What happened:** {one_liner}",
         "",
-        "**Why we think so:** " + narrative,
+        f"**Why we think so:** {narrative}",
         "",
         "**Next steps:** " + ", ".join(
             f"{a.get('code', '?')} ({a.get('priority', '?')})"
@@ -123,7 +122,7 @@ class EventAnalyzer:
             ],
         )
         text = resp.choices[0].message.content
-        data = _parse_json_from_response(text)
+        data = parse_json_from_llm(text)
 
         if "artifacts" not in data:
             data["artifacts"] = {}
