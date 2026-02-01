@@ -28,7 +28,6 @@ load_dotenv(dotenv_path=_root_env, override=False)
 
 app = FastAPI(title="Sentinel API")
 
-# RAG decision layer (Stage 3) - lazy init with MockPolicyProvider
 _rag_engine: DecisionEngine | None = None
 
 

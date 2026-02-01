@@ -1,98 +1,109 @@
+#TODO: fill in correct S3 bucket and prefix
+
 """
-Policy document source abstraction.
-Switching from MockPolicyProvider to S3PolicyProvider requires no refactor outside this module.
+- PolicyProvider: ABC for document sources
+- S3PolicyProvider: AWS S3
+- MockPolicyProvider: minimal dev fallback
 """
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from .schemas import PolicyDocument
 
 
 class PolicyProvider(ABC):
-    """Abstract interface for document ingestion sources."""
+    """Abstract base for policy document sources."""
 
     @abstractmethod
     def fetch_documents(self) -> list[PolicyDocument]:
-        """Fetch policy documents from the source. Called by the ingestion pipeline."""
         ...
 
 
+class S3PolicyProvider(PolicyProvider):
+    """Fetch policy documents from S3. Supports PDF, txt, md."""
+
+    def __init__(
+        self,
+        *,
+        bucket: str = "sentinel-policy-docs",
+        prefix: str = "policy/",
+        region: str = "us-east-1",
+    ):
+        self._bucket = bucket
+        self._prefix = (prefix.rstrip("/") + "/") if prefix else ""
+        self._region = region
+
+    def fetch_documents(self) -> list[PolicyDocument]:
+        """List S3 objects, download, parse (PDF/txt/md), return PolicyDocuments."""
+        import boto3
+
+        client = boto3.client("s3", region_name=self._region)
+        paginator = client.get_paginator("list_objects_v2")
+        docs: list[PolicyDocument] = []
+        seen: set[str] = set()
+
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=self._prefix):
+            for obj in page.get("Contents") or []:
+                key = obj["Key"]
+                if key.endswith("/"):
+                    continue
+                ext = Path(key).suffix.lower()
+                if ext not in (".pdf", ".txt", ".md"):
+                    continue
+                doc_id = key.replace("/", "_").replace(" ", "_")[:80]
+                if doc_id in seen:
+                    continue
+                seen.add(doc_id)
+
+                try:
+                    resp = client.get_object(Bucket=self._bucket, Key=key)
+                    body = resp["Body"].read()
+                except Exception:
+                    continue
+
+                text = self._parse_content(body, ext, key)
+                if not text:
+                    continue
+
+                docs.append(
+                    PolicyDocument(
+                        id=doc_id,
+                        text=text,
+                        metadata={"source": "s3", "key": key, "bucket": self._bucket},
+                    )
+                )
+
+        return docs
+
+    def _parse_content(self, body: bytes, ext: str, key: str) -> str:
+        if ext == ".txt" or ext == ".md":
+            return body.decode("utf-8", errors="replace")
+        if ext == ".pdf":
+            try:
+                from pypdf import PdfReader
+                from io import BytesIO
+
+                reader = PdfReader(BytesIO(body))
+                return "\n\n".join(p.extract_text() or "" for p in reader.pages)
+            except Exception:
+                return ""
+        return ""
+
+
 class MockPolicyProvider(PolicyProvider):
-    """Returns sample Providence policy text for development and testing."""
+    """Minimal hardcoded docs for dev/testing."""
 
     def fetch_documents(self) -> list[PolicyDocument]:
         return [
             PolicyDocument(
-                id="prov_incident_response_001",
-                text=(
-                    "When a traffic incident occurs on a state highway within Providence city limits, "
-                    "the Rhode Island Department of Transportation (RIDOT) Traffic Management Center "
-                    "shall be notified within 15 minutes. Incidents involving injuries, fatalities, "
-                    "or hazmat require immediate escalation to RIDOT and Providence Emergency Management."
-                ),
-                metadata={
-                    "city": "Providence",
-                    "doc_type": "incident_response",
-                    "source": "RIDOT_TMC_Procedures",
-                    "section": "5.2",
-                },
+                id="mock_001",
+                text="Traffic incidents on state highways require RIDOT notification within 15 minutes.",
+                metadata={"city": "Providence", "doc_type": "incident_response"},
             ),
             PolicyDocument(
-                id="prov_lane_blockage_001",
-                text=(
-                    "Lane blockage events—including stalled vehicles, debris, and construction—"
-                    "require deployment of variable message signs (VMS) within 20 minutes when "
-                    "traffic flow is reduced by more than one lane. Providence Public Works "
-                    "coordinates with RIDOT for state highway segments."
-                ),
-                metadata={
-                    "city": "Providence",
-                    "doc_type": "lane_blockage",
-                    "source": "Providence_Traffic_Ops",
-                    "section": "3.1",
-                },
-            ),
-            PolicyDocument(
-                id="prov_multi_vehicle_001",
-                text=(
-                    "Multi-vehicle incidents involving three or more vehicles are classified "
-                    "as high-priority. Providence PD and RIDOT shall establish a unified command. "
-                    "Evidence preservation protocols apply; video footage from traffic cameras "
-                    "shall be retained for a minimum of 72 hours."
-                ),
-                metadata={
-                    "city": "Providence",
-                    "doc_type": "multi_vehicle_incident",
-                    "source": "Providence_PD_Traffic",
-                    "section": "8.4",
-                },
-            ),
-            PolicyDocument(
-                id="prov_congestion_001",
-                text=(
-                    "Congestion and stop-and-go traffic on Providence arterials require "
-                    "signal timing adjustments when average speed falls below 15 mph for "
-                    "10 consecutive minutes. Non-emergency; routine TMC procedures apply."
-                ),
-                metadata={
-                    "city": "Providence",
-                    "doc_type": "congestion",
-                    "source": "RIDOT_Signal_Ops",
-                    "section": "2.3",
-                },
-            ),
-            PolicyDocument(
-                id="prov_emergency_vehicle_001",
-                text=(
-                    "Emergency vehicle response—flashing lights, ambulance, fire, or police—"
-                    "takes precedence over all other traffic events. Operators shall flag "
-                    "for human review and annotate the event. Do not suppress as false positive."
-                ),
-                metadata={
-                    "city": "Providence",
-                    "doc_type": "emergency_response",
-                    "source": "RIDOT_TMC_Procedures",
-                    "section": "5.1",
-                },
+                id="mock_002",
+                text="Lane blockages require VMS deployment within 20 minutes when flow is reduced.",
+                metadata={"city": "Providence", "doc_type": "lane_blockage"},
             ),
         ]
