@@ -1138,3 +1138,16 @@ async def vlm_location(body: dict):
             "observations": ["Error occurred during analysis"],
             "updated_at": requested_at,
         }
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+    port = int(os.environ.get("PORT", 8000))
+    
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=False,
+        workers=1
+    )
