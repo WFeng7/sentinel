@@ -47,14 +47,14 @@ SENTINEL_EVENT_DETECTION=1 python object_tracking.py
 
 ### Motion-first candidate scoring (alternative pipeline)
 
-`motion_first_tracking.py` uses motion blobs (MOG2 on chroma + morphology + connected components) as the primary tracker. Stage 1 outputs event candidates with `event_types` (stopped_vehicle, shockwave, pedestrian, decel_jerk). Frame skipping processes at target FPS; YOLO runs at 1 Hz.
+`motion_first_tracking.py` uses motion blobs (MOG2 on chroma + morphology + connected components) as the primary tracker. Stage 1 outputs event candidates with `event_types` (stopped_vehicle, shockwave, pedestrian, decel). Frame skipping processes at target FPS; YOLO runs at 1 Hz.
 
 ```bash
 python motion_first_tracking.py [video_or_stream]
 python motion_first_tracking.py --no-display -o output.mp4 --target-fps 5
 ```
 
-**Indicators:** decel/jerk spike, stopped-in-lane, shockwave (median_speed_drop + density_increase), YOLO person, YOLO vehicle excess (smoothed). Tune `--threshold` for `send_to_vlm` sensitivity.
+**Indicators:** decel spike, stopped-in-lane, shockwave (median_speed_drop + density_increase), YOLO person, high track count. Tune `--threshold` for `send_to_vlm` sensitivity.
 
 ## Troubleshooting
 

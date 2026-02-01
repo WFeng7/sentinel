@@ -6,7 +6,7 @@ Stage 1 outputs event candidates + evidence; binary "send to VLM" threshold is o
 
 - Motion blobs: MOG2 on chroma (Lab a,b) → morphology → connected components → bboxes
 - SORT-like tracker: Kalman (cx, cy, w, h) with dt-scaled Q + IoU matching
-- Kinematics: vel, accel, jerk per track; decel/jerk spikes + stopped-in-lane persistence
+- Kinematics: vel, accel per track; decel spike + stopped-in-lane persistence
 - Scene shockwave: median_speed, track_count, median_speed_drop, density_increase
 - YOLO: sparse (1 Hz) or on pre-threshold; predict() not track()
 - Frame skipping: process every skip frames at target FPS
@@ -100,14 +100,12 @@ class Track:
     age: int = 0
     hits: int = 0
     time_since_update: int = 0
-    # Kinematics: vel, accel, jerk (EMA-smoothed) for decel/jerk spikes
-    vel_history: deque = field(default_factory=lambda: deque(maxlen=30))
+    # Kinematics: vel, accel (rolling avg ~20 frames)
+    vel_history: deque = field(default_factory=lambda: deque(maxlen=20))
     accel_history: deque = field(default_factory=lambda: deque(maxlen=20))
-    jerk_history: deque = field(default_factory=lambda: deque(maxlen=15))
     vel_ema: float = 0.0
     accel_ema: float = 0.0
-    jerk_ema: float = 0.0
-    alpha_ema: float = 0.3
+    alpha_ema: float = 0.095  # ~20 frame EMA span (2/(N+1))
 
     @property
     def cx(self) -> float:
@@ -131,10 +129,6 @@ class Track:
             accel = (speed - self.vel_history[-2]) / dt
             self.accel_history.append(accel)
             self.accel_ema = self.alpha_ema * accel + (1 - self.alpha_ema) * self.accel_ema
-            if len(self.accel_history) >= 2:
-                jerk = (self.accel_history[-1] - self.accel_history[-2]) / dt
-                self.jerk_history.append(jerk)
-                self.jerk_ema = self.alpha_ema * jerk + (1 - self.alpha_ema) * self.jerk_ema
 
     @property
     def speed_px_s(self) -> float:
@@ -143,10 +137,6 @@ class Track:
     @property
     def accel_px_s2(self) -> float:
         return self.accel_ema if self.accel_history else 0.0
-
-    @property
-    def jerk_px_s3(self) -> float:
-        return self.jerk_ema if self.jerk_history else 0.0
 
 
 def iou_box(box1: tuple[float, ...], box2: tuple[float, ...]) -> float:
@@ -424,17 +414,21 @@ YOLO_PERSON_CLASS = 0
 
 # Default weights (tune per deployment)
 DEFAULT_WEIGHTS = {
-    "decel_jerk_spike": 1.5,
+    "decel_spike": 1.5,
     "stopped_in_lane": 1.5,
     "shockwave": 1.5,
     "yolo_person_detected": 2.5,
-    "yolo_vehicle_excess": 1.0,
+    "high_track_count": 1.0,
 }
-DEFAULT_THRESHOLD = 5.0
+DEFAULT_HIGH_TRACK_THRESH = 20  # tracks > this contributes
+DEFAULT_THRESHOLD = 4.0
 DEFAULT_TARGET_FPS = 5.0
 DEFAULT_YOLO_HZ = 1.0  # Run YOLO at 1 Hz when sparse
+PERSON_CONF_THRESH = 0.5  # Require higher conf for person to reduce false positives
+PERSON_PERSIST_RUNS = 2   # Person must appear in N consecutive YOLO runs to trust
 STOPPED_THRESH_PX_S = 5.0
 STOPPED_PERSIST_FRAMES = 8  # ~1.6s at 5 FPS
+DECEL_MIN_HITS = 5  # Only use decel/accel from tracks present 5+ frames
 SHOCKWAVE_MED_DROP_THRESH = 8.0  # px/s (median_speed_drop)
 SHOCKWAVE_DENSITY_INCREASE = 0.3  # fraction
 
@@ -501,13 +495,13 @@ class MotionFirstTracker:
         # State: shockwave
         self._median_speed_history: deque = deque(maxlen=30)
         self._track_count_history: deque = deque(maxlen=30)
-        self._raw_det_count_smooth: float = 0.0
-        self._smooth_alpha = 0.2
         # State: stopped-in-lane (per-track stop frames)
         self._stop_frames: dict[int, int] = {}
+        self._decel_history: deque = deque(maxlen=10)
         self._grid_size = 20
         self._last_person_result = False
         self._last_yolo_vehicle_count = 0
+        self._person_run_count = 0  # Consecutive YOLO runs with person detected
         self._last_candidate: CandidateScore | None = None
 
         # Output
@@ -530,26 +524,22 @@ class MotionFirstTracker:
     def _pixel_to_grid(self, cx: float, cy: float) -> tuple[int, int]:
         return int(cx // self._grid_size), int(cy // self._grid_size)
 
-    def _indicator_decel_jerk(self, active_tracks: list, weight: float) -> tuple[float, str]:
-        """Hard decel or jerk spike in last 1-2s. Max negative accel, max |jerk|."""
+    def _indicator_decel_spike(self, active_tracks: list, weight: float) -> tuple[float, str]:
+        """Hard decel: max negative accel < -15 px/s². Only tracks with hits >= DECEL_MIN_HITS."""
         if not active_tracks:
             return 0.0, ""
-        decel_contrib = 0.0
-        jerk_contrib = 0.0
+        count = 0
         for t in active_tracks:
+            if t.hits < DECEL_MIN_HITS:
+                continue
             if len(t.accel_history) >= 2:
                 accels = list(t.accel_history)
                 min_accel = min(accels[-5:]) if len(accels) >= 5 else min(accels)
-                if min_accel < -15:  # px/s² hard decel
-                    decel_contrib += 0.5
-            if len(t.jerk_history) >= 2:
-                jerks = list(t.jerk_history)
-                max_jerk = max(abs(j) for j in jerks[-5:]) if len(jerks) >= 5 else max(abs(j) for j in jerks)
-                if max_jerk > 50:
-                    jerk_contrib += 0.5
-        raw = min(decel_contrib + jerk_contrib, 2.0)
+                if min_accel < -15:
+                    count += 1
+        raw = min(count * 0.5, 2.0)
         contrib = weight * raw
-        event = "decel_jerk" if raw > 0 else ""
+        event = "decel" if raw > 0 else ""
         return contrib, event
 
     def _indicator_stopped_in_lane(self, active_tracks: list, weight: float) -> tuple[float, str]:
@@ -598,6 +588,8 @@ class MotionFirstTracker:
 
     def _run_yolo(self, frame: np.ndarray) -> tuple[bool, int]:
         """Run YOLO predict (not track) on frame. Sparse: call at 1 Hz or on pre-threshold."""
+        person_found = False
+        vehicle_count = 0
         try:
             res = self.yolo.predict(
                 frame,
@@ -607,25 +599,30 @@ class MotionFirstTracker:
                 device=self.device,
                 verbose=False,
             )
-            person_found = False
-            vehicle_count = 0
             if res and len(res) > 0 and res[0].boxes is not None and res[0].boxes.cls is not None:
                 cls = res[0].boxes.cls.cpu().numpy()
-                person_found = bool(np.any(cls == YOLO_PERSON_CLASS))
+                conf = res[0].boxes.conf.cpu().numpy() if res[0].boxes.conf is not None else np.ones_like(cls)
+                person_mask = (cls == YOLO_PERSON_CLASS) & (conf >= PERSON_CONF_THRESH)
+                person_found = bool(np.any(person_mask))
                 vehicle_count = int(np.sum(np.isin(cls, YOLO_VEHICLE_CLASSES)))
+            # Require persistence: person must appear in N consecutive YOLO runs
+            if person_found:
+                self._person_run_count = min(self._person_run_count + 1, PERSON_PERSIST_RUNS)
+            else:
+                self._person_run_count = 0
+            self._last_person_result = self._person_run_count >= PERSON_PERSIST_RUNS
+            self._last_yolo_vehicle_count = vehicle_count
         except Exception:
-            person_found = False
-            vehicle_count = 0
-        self._last_person_result = person_found
-        self._last_yolo_vehicle_count = vehicle_count
-        return person_found, vehicle_count
+            self._person_run_count = 0
+            self._last_person_result = False
+            self._last_yolo_vehicle_count = 0
+        return self._last_person_result, self._last_yolo_vehicle_count
 
     def _classify_candidate(
         self,
         frame: np.ndarray,
         frame_idx: int,
         active_tracks: list,
-        raw_det_count: int,
     ) -> CandidateScore:
         """Stage 1: event candidate scoring. send_to_vlm = hard threshold for VLM trigger."""
         contributions = {}
@@ -635,13 +632,15 @@ class MotionFirstTracker:
         active_ids = {t.track_id for t in active_tracks}
         self._stop_frames = {k: v for k, v in self._stop_frames.items() if k in active_ids}
 
-        # A) Decel/jerk spike
-        c_decel, e_decel = self._indicator_decel_jerk(
-            active_tracks, self.weights.get("decel_jerk_spike", 0.0)
+        # A) Decel spike (averaged over last 10 frames)
+        c_decel_raw, _ = self._indicator_decel_spike(
+            active_tracks, self.weights.get("decel_spike", 0.0)
         )
-        contributions["decel_jerk_spike"] = c_decel
-        if e_decel:
-            event_types["decel_jerk"] = c_decel
+        self._decel_history.append(c_decel_raw)
+        c_decel = sum(self._decel_history) / len(self._decel_history) if self._decel_history else 0.0
+        contributions["decel_spike"] = c_decel
+        if c_decel > 0:
+            event_types["decel"] = c_decel
 
         # B) Stopped-in-lane
         c_stopped, e_stopped = self._indicator_stopped_in_lane(
@@ -666,17 +665,10 @@ class MotionFirstTracker:
         if person:
             event_types["pedestrian"] = c_person
 
-        # E) YOLO vehicle excess (smoothed raw det count for stable ratio)
-        self._raw_det_count_smooth = (
-            self._smooth_alpha * raw_det_count
-            + (1 - self._smooth_alpha) * self._raw_det_count_smooth
-        )
-        motion_n_smooth = max(self._raw_det_count_smooth, 0.5)
-        yolo_n = self._last_yolo_vehicle_count
-        ratio = yolo_n / motion_n_smooth
-        excess_ratio = max(0.0, ratio - 1.0)
-        c_excess = min(math.sqrt(excess_ratio), 2.0) * self.weights.get("yolo_vehicle_excess", 0.0)
-        contributions["yolo_vehicle_excess"] = c_excess
+        # E) High track count: tracks > thresh contributes
+        track_n = len(active_tracks)
+        c_high = self.weights.get("high_track_count", 0.0) if track_n > DEFAULT_HIGH_TRACK_THRESH else 0.0
+        contributions["high_track_count"] = c_high
 
         score = sum(contributions.values())
         send_to_vlm = score >= self.incident_threshold
@@ -719,18 +711,16 @@ class MotionFirstTracker:
 
             # 2. Motion blobs
             dets = self.blob_detector.detect(frame)
-            raw_det_count = len(dets)
             active_tracks = self.tracker.update(dets, processed_idx)
 
-            # 4. Candidate scoring
-            if processed_idx % check_interval == 0:
-                cand = self._classify_candidate(
-                    frame, processed_idx, active_tracks=active_tracks, raw_det_count=raw_det_count
-                )
-                if cand.send_to_vlm:
-                    parts = [f"{k}:{v:.2f}" for k, v in cand.contributions.items() if v > 0]
-                    print(f"\n[motion_first] CANDIDATE send_to_vlm @ frame {frame_idx} | score={cand.score:.2f}")
-                    print(f"  events: {cand.event_types} | contrib: {', '.join(parts)}\n")
+            # 4. Candidate scoring (every frame)
+            cand = self._classify_candidate(
+                frame, processed_idx, active_tracks=active_tracks
+            )
+            parts = [f"{k}:{v:.2f}" for k, v in cand.contributions.items()]
+            print(f"[motion_first] frame {frame_idx} | score={cand.score:.2f} | {', '.join(parts)}")
+            if cand.send_to_vlm:
+                print(f"  >> CANDIDATE send_to_vlm | events: {cand.event_types}")
 
             # 5. Draw
             if display or self.video_writer:
@@ -753,14 +743,13 @@ class MotionFirstTracker:
                     label = "VLM" if cand.send_to_vlm else "OK"
                     cv2.putText(vis, f"{label} ({cand.score:.1f})", (10, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
-                    short = {"decel_jerk_spike": "decel", "stopped_in_lane": "stop", "shockwave": "shock", "yolo_person_detected": "pers", "yolo_vehicle_excess": "excess"}
+                    short = {"decel_spike": "decel", "stopped_in_lane": "stop", "shockwave": "shock", "yolo_person_detected": "pers", "high_track_count": "tracks"}
                     parts = [f"{short.get(k, k[:4])}:{v:.1f}" for k, v in cand.contributions.items() if v > 0]
                     if parts:
                         cv2.putText(vis, " | ".join(parts), (10, 105),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
                 motion_n = len(active_tracks)
-                ratio = self._last_yolo_vehicle_count / max(motion_n, 1)
-                cv2.putText(vis, f"YOLO: {self._last_yolo_vehicle_count} | tracks: {motion_n} | ratio: {ratio:.2f}",
+                cv2.putText(vis, f"YOLO: {self._last_yolo_vehicle_count} | tracks: {motion_n}",
                             (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
                 # FPS (rolling average)
                 fps_times.append(time.perf_counter())
@@ -800,7 +789,7 @@ class MotionFirstTracker:
 def main():
     import argparse
     _script_dir = os.path.dirname(os.path.abspath(__file__))
-    _default_video = os.path.join(_script_dir, "test-video-processing", "cropped.mov")
+    _default_video = os.path.join(_script_dir, "test-video-processing", "2026-01-31 23-11-57.mov")
     p = argparse.ArgumentParser(description="Motion-first incident detection")
     p.add_argument("source", nargs="?", default=_default_video, help="Video file or stream URL")
     p.add_argument("--yolo", default="yolo26s.pt", help="YOLO model path")
