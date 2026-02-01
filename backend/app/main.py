@@ -150,6 +150,7 @@ def set_cached_geo(label: str, geo: dict | None) -> None:
 
 def load_geo_llm_cache() -> None:
     if not os.path.exists(GEO_LLM_CACHE_FILE):
+        print(f"[geocode-llm] cache file not found at {GEO_LLM_CACHE_FILE}")
         return
     try:
         with open(GEO_LLM_CACHE_FILE, "r", encoding="utf-8") as handle:
@@ -165,15 +166,19 @@ def load_geo_llm_cache() -> None:
                 if not label:
                     continue
                 GEO_LLM_CACHE[label] = entry
+        print(f"[geocode-llm] loaded {len(GEO_LLM_CACHE)} cached entries")
     except OSError:
         return
 
 
 def append_geo_llm_cache(entry: dict) -> None:
     try:
+        os.makedirs(os.path.dirname(GEO_LLM_CACHE_FILE), exist_ok=True)
         with open(GEO_LLM_CACHE_FILE, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry) + "\n")
+        print(f"[geocode-llm] wrote cache entry for label='{entry.get('label','')}'")
     except OSError:
+        print("[geocode-llm] failed to write cache file")
         return
 
 
@@ -182,11 +187,14 @@ load_geo_llm_cache()
 
 async def geocode_with_llm(label: str) -> dict | None:
     if not os.getenv("OPENAI_API_KEY"):
+        print("[geocode-llm] OPENAI_API_KEY missing; skipping LLM geocode")
         return None
     cached = GEO_LLM_CACHE.get(label)
     if cached:
         if cached.get("miss"):
+            print(f"[geocode-llm] cached miss label='{label}'")
             return None
+        print(f"[geocode-llm] cache hit label='{label}'")
         return cached.get("geo") or None
 
     client = OpenAI()
@@ -198,12 +206,14 @@ async def geocode_with_llm(label: str) -> dict | None:
         f"Label: {label}\n"
     )
     try:
+        print(f"[geocode-llm] calling OpenAI for label='{label}'")
         response = client.responses.create(
             model="gpt-4.1-nano",
             input=prompt,
             temperature=0.1,
         )
         text = response.output_text.strip()
+        print(f"[geocode-llm] OpenAI raw response: {text}")
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?", "", text).strip()
             text = re.sub(r"```$", "", text).strip()
@@ -216,8 +226,8 @@ async def geocode_with_llm(label: str) -> dict | None:
             GEO_LLM_CACHE[label] = entry
             append_geo_llm_cache(entry)
             return geo
-    except Exception:
-        pass
+    except Exception as exc:
+        print(f"[geocode-llm] OpenAI error: {exc}")
 
     entry = {"label": label, "geo": None, "miss": True, "ts": time.time()}
     GEO_LLM_CACHE[label] = entry
