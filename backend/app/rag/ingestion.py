@@ -1,17 +1,21 @@
 """
 Modular document ingestion pipeline.
-Fetches from PolicyProvider, ingests into vector store.
+Fetches from provider (S3PolicyProvider, MockPolicyProvider, etc.), ingests into vector store.
 """
 
-from .providers import PolicyProvider
+from typing import Protocol
+
 from .schemas import PolicyDocument
-from .opensearch_store import OpenSearchVectorStore
+
+
+class _ProviderProtocol(Protocol):
+    def fetch_documents(self) -> list[PolicyDocument]: ...
 
 
 class DocumentIngestionPipeline:
-    """Ingests documents from a PolicyProvider into a vector store."""
+    """Ingests documents from a provider into a vector store."""
 
-    def __init__(self, provider: PolicyProvider, vector_store: OpenSearchVectorStore):
+    def __init__(self, provider: _ProviderProtocol, vector_store):
         self._provider = provider
         self._store = vector_store
 

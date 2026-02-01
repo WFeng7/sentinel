@@ -7,18 +7,15 @@ import os
 
 from .decision_engine import DecisionEngine, DecisionInput, DecisionOutput
 from .ingestion import DocumentIngestionPipeline
-from .providers import MockPolicyProvider, PolicyProvider, S3PolicyProvider
+from .providers import MockPolicyProvider, S3PolicyProvider
 from .retriever import PolicyRetriever
 from .schemas import PolicyDocument, RetrievedExcerpt
-from .vector_store import InMemoryVectorStore
 
 __all__ = [
-    "PolicyProvider",
     "S3PolicyProvider",
     "MockPolicyProvider",
     "PolicyDocument",
     "RetrievedExcerpt",
-    "InMemoryVectorStore",
     "DocumentIngestionPipeline",
     "PolicyRetriever",
     "DecisionEngine",
@@ -29,7 +26,7 @@ __all__ = [
 
 
 def create_rag_pipeline(
-    provider: PolicyProvider | None = None,
+    provider: S3PolicyProvider | MockPolicyProvider | None = None,
     *,
     store_type: str | None = None,
     provider_type: str | None = None,
@@ -51,16 +48,12 @@ def create_rag_pipeline(
         )
     else:
         provider = MockPolicyProvider()
-
-    if store_type == "opensearch":
-        from .opensearch_store import OpenSearchVectorStore
-        store = OpenSearchVectorStore(
-            endpoint=os.environ.get("OPENSEARCH_ENDPOINT", "https://placeholder.opensearch.region.es.amazonaws.com"),
-            index_name=os.environ.get("OPENSEARCH_INDEX", "policy-docs"),
-            region=os.environ.get("AWS_REGION", "us-east-1"),
-        )
-    else:
-        store = InMemoryVectorStore()
+    from .opensearch_store import OpenSearchVectorStore
+    store = OpenSearchVectorStore(
+        endpoint=os.environ.get("OPENSEARCH_ENDPOINT", "https://placeholder.opensearch.region.es.amazonaws.com"),
+        index_name=os.environ.get("OPENSEARCH_INDEX", "policy-docs"),
+        region=os.environ.get("AWS_REGION", "us-east-1"),
+    )
 
     pipeline = DocumentIngestionPipeline(provider=provider, vector_store=store)
     pipeline.run()
