@@ -1,6 +1,6 @@
 # Sentinel
 
-Minimal setup to run the React + Tailwind frontend and FastAPI backend together.
+Sentinel is an AI system that turns live traffic camera footage into real-time incident alerts and structured reports. Instead of waiting for someone to call 911 or manually monitor dozens of screens, Sentinel continuously watches roadway video, detects abnormal patterns like sudden stops or collisions, and determines whether an accident has likely occurred. When it detects a high-risk event, it automatically analyzes the scene, generates a structured incident summary, and sends it to operators for immediate dispatch, saving critical minutes when every second can mean the difference between life and death.
 
 ## Prereqs
 
